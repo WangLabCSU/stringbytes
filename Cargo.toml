@@ -9,7 +9,7 @@ license = "MIT"
 readme = "README.md"
 repository = "https://github.com/WangLabCSU/stringbytes"
 documentation = "https://docs.rs/stringbytes"
-keywords = ["string", "bytes", "utf8", "conversion"]
+keywords = ["string", "bytes", "utf8"]
 categories = ["text-processing"]
 include = ["/src/**", "/benches/**", "/Cargo.toml", "/README.md", "/LICENSE"]
 
