@@ -56,30 +56,22 @@ The table shows when `try_into_string()` reuses an allocation;
 For unsized `[u8]` and `str`, the table lists the references and owning pointers
 used for `try_into_string()`.
 
-| Type                                          | Reuses allocation         | Conditions                                                                    |
-| --------------------------------------------- | ------------------------- | ----------------------------------------------------------------------------- |
-| `&[u8]`                                       | No                        | Copies the borrowed bytes into a new `String`.                                |
-| `[u8; N]`                                     | No                        | Copies the inline bytes.                                                      |
-| `Vec<u8>`                                     | **Yes**                   | Transfers the existing buffer.                                                |
-| `Cow<'_, [u8]>`                               | **Conditional**           | Owned values reuse their buffer; borrowed values are copied.                  |
-| `Box<[u8]>`, `Box<[u8; N]>`                   | **Yes**                   | Transfers the boxed allocation.                                               |
-| `Rc<[u8]>`, `Arc<[u8]>`                       | No                        | Copies even with unique ownership.                                            |
-| `bytes::Bytes`                                | **Conditional**           | Requires the `bytes` feature; depends on backing storage and ownership.       |
-| `bytes::BytesMut`                             | **Conditional**           | Requires the `bytes` feature; reuses a unique allocation, copies shared data. |
-| `&str`                                        | No                        | Copies the borrowed string into a new `String`.                               |
-| `String`                                      | **Yes**                   | Transfers the existing buffer.                                                |
-| `Cow<'_, str>`                                | **Conditional**           | Owned values reuse their buffer; borrowed values are copied.                  |
-| `Box<str>`                                    | **Yes**                   | Transfers the boxed allocation.                                               |
-| `Rc<str>`, `Arc<str>`                         | No                        | Copies even with unique ownership.                                            |
-| `&T`, `&mut T`                                | No                        | Copies the referenced data, leaving the source unchanged.                     |
-| `Box<T>` for other sized `T`                  | **Follows `T`**           | Uses the contained value's conversion.                                        |
-| `Rc<T>`, `Arc<T>` with sized `T`              | **Conditional**           | Unique ownership uses `T`'s conversion; shared contents are copied.           |
-| `Box<dyn StringBytes>`                        | **Follows concrete type** | Uses the concrete type's boxed conversion.                                    |
-| `Rc<dyn StringBytes>`, `Arc<dyn StringBytes>` | **Conditional**           | Follows the concrete type's conversion and ownership conditions.              |
-
-`Bytes` copies static data, shared buffers, and storage supplied by `from_owner`.
-`BytesMut` copies while its buffer is shared. Reusing a sliced buffer may move
-bytes within the same allocation.
+| Type                             | Reuses allocation | Conditions                                                          |
+| -------------------------------- | ----------------- | ------------------------------------------------------------------- |
+| `&[u8]`                          | No                | Copies the borrowed bytes into a new `String`.                      |
+| `[u8; N]`                        | No                | Copies the inline bytes.                                            |
+| `Vec<u8>`                        | **Yes**           | Transfers the existing buffer.                                      |
+| `Cow<'_, [u8]>`                  | **Conditional**   | Owned values reuse their buffer; borrowed values are copied.        |
+| `Box<[u8]>`, `Box<[u8; N]>`      | **Yes**           | Transfers the boxed allocation.                                     |
+| `Rc<[u8]>`, `Arc<[u8]>`          | No                | Copies even with unique ownership.                                  |
+| `&str`                           | No                | Copies the borrowed string into a new `String`.                     |
+| `String`                         | **Yes**           | Transfers the existing buffer.                                      |
+| `Cow<'_, str>`                   | **Conditional**   | Owned values reuse their buffer; borrowed values are copied.        |
+| `Box<str>`                       | **Yes**           | Transfers the boxed allocation.                                     |
+| `Rc<str>`, `Arc<str>`            | No                | Copies even with unique ownership.                                  |
+| `&T`, `&mut T`                   | No                | Copies the referenced data, leaving the source unchanged.           |
+| `Box<T>` for other sized `T`     | **Follows `T`**   | Uses the contained value's conversion.                              |
+| `Rc<T>`, `Arc<T>` with sized `T` | **Conditional**   | Unique ownership uses `T`'s conversion; shared contents are copied. |
 
 For sized `T`, `Rc<T>` and `Arc<T>` take ownership of the inner value when only
 one strong reference remains, using
@@ -104,3 +96,13 @@ let string = storage.try_into_string().unwrap();
 assert_eq!(string.as_ptr(), address);
 assert!(weak.upgrade().is_none());
 ```
+
+## The `bytes` feature
+
+Enable the `bytes` feature to use `StringBytes` with `bytes::Bytes` and
+`bytes::BytesMut`. This feature is disabled by default.
+
+`try_into_string()` converts these types through `Vec<u8>`, reusing the allocation
+when possible. `Bytes` copies static data, shared buffers, and storage supplied
+by `from_owner`. `BytesMut` copies while its buffer is shared. Reusing a sliced
+buffer may move bytes within the same allocation.
