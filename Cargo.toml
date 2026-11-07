@@ -1,0 +1,15 @@
+[package]
+name = "stringbytes"
+version = "0.0.1"
+description = "A trait for byte sequences and UTF-8 strings"
+authors = ["Yun Peng <pengyun.me@outlook.com>"]
+edition = "2021"
+rust-version = "1.95"
+readme = "README.md"
+include = ["/src/**", "/benches/**", "/Cargo.toml", "/README.md", "/LICENSE"]
+
+[features]
+bytes = ["dep:bytes"]
+
+[dependencies]
+bytes = { version = "1.12.*", optional = true }
