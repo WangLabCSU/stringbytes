@@ -1,0 +1,3 @@
+[intralinks]
+# Enable the optional dependency when resolving links for the README.
+features = ["bytes"]

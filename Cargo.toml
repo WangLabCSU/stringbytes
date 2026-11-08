@@ -13,6 +13,9 @@ keywords = ["string", "bytes", "utf8"]
 categories = ["text-processing"]
 include = ["/src/**", "/benches/**", "/Cargo.toml", "/README.md", "/LICENSE"]
 
+[package.metadata.docs.rs]
+features = ["bytes"]
+
 [features]
 bytes = ["dep:bytes"]
 
