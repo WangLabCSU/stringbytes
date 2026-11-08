@@ -139,17 +139,22 @@ mod sealed;
 ///
 /// - [`Self::as_bytes`] returns the same bytes unless the value is modified
 ///   through mutable or owned access. Interior mutability must not change the
-///   bytes exposed by this method, [`AsRef<[u8]>`](AsRef), or [`AsMut<[u8]>`](AsMut).
+///   bytes exposed through this method, [`AsRef<[u8]>`](AsRef),
+///   [`AsMut<[u8]>`](AsMut), or [`Deref`](std::ops::Deref).
 /// - If [`AsRef<[u8]>`](AsRef) is implemented, it borrows the same slice as
 ///   [`as_bytes`](Self::as_bytes).
 /// - If [`AsMut<[u8]>`](AsMut) is implemented, it mutably borrows that same slice.
+/// - If [`Deref`](std::ops::Deref) is implemented, its
+///   [`Target`](std::ops::Deref::Target) also implements [`StringBytes`].
+///   Calling [`as_bytes`](Self::as_bytes) on `self` or its dereference target
+///   borrows the same slice.
 /// - [`Self::to_bytes`] and [`Self::into_bytes`] preserve the bytes returned by
 ///   [`as_bytes`](Self::as_bytes).
 /// - Successful calls to [`Self::try_borrow_str`], [`Self::try_to_string`], and
 ///   [`Self::try_into_string`] preserve the bytes returned by [`as_bytes`](Self::as_bytes).
 ///
-/// The rules for [`AsRef`] and [`AsMut`] apply only when those traits are
-/// implemented; they are not required by [`StringBytes`].
+/// The rules for [`AsRef`], [`AsMut`], and [`Deref`](std::ops::Deref) apply only
+/// when those traits are implemented; they are not required by [`StringBytes`].
 ///
 /// # Dyn compatibility
 ///

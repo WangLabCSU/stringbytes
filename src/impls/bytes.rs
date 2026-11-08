@@ -106,6 +106,7 @@ impl_string_bytes!(BytesMut {
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
+    use std::ops::Deref;
 
     #[cfg(feature = "bytes")]
     use bytes::{Bytes, BytesMut};
@@ -661,6 +662,50 @@ mod tests {
 
         check_mut(&mut [0_u8; 0]);
         check_mut(&mut [0xff_u8; 64]);
+    }
+
+    #[test]
+    fn deref_target_implements_string_bytes_and_borrows_the_same_slice() {
+        fn check<T>(storage: &T, expected: &[u8])
+        where
+            T: StringBytes + Deref + ?Sized,
+            T::Target: StringBytes,
+        {
+            // The bound checks the target type; pointer equality checks both
+            // the address and length of the byte views.
+            for _ in 0..3 {
+                let bytes = StringBytes::as_bytes(storage);
+                let target_bytes = StringBytes::as_bytes(T::deref(storage));
+                assert!(std::ptr::eq(bytes, target_bytes));
+                assert_eq!(target_bytes, expected);
+            }
+        }
+
+        for input in [b"".as_slice(), b"text", b"\0e\xcc\x81", b"ok\xff"] {
+            check(&Vec::from(input), input);
+            check(&Cow::Borrowed(input), input);
+            check(&Cow::<'_, [u8]>::Owned(Vec::from(input)), input);
+
+            #[cfg(feature = "bytes")]
+            {
+                check(&Bytes::from_static(input), input);
+                check(&Bytes::from(Vec::from(input)), input);
+                check(&Bytes::from_owner(Vec::from(input)), input);
+
+                let expected = [b"prefix".as_slice(), input].concat();
+                let bytes = Bytes::from(expected.clone());
+                let slice = bytes.slice(6..);
+                check(&bytes, &expected);
+                check(&slice, input);
+
+                let mut bytes = BytesMut::from(input);
+                check(&bytes, input);
+                bytes.extend_from_slice(b"tail");
+                let prefix = bytes.split_to(input.len());
+                check(&prefix, input);
+                check(&bytes, b"tail");
+            }
+        }
     }
 
     #[test]

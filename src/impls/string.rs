@@ -119,6 +119,7 @@ impl_string_bytes!(Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
+    use std::ops::Deref;
     use std::rc::Rc;
     use std::sync::Arc;
 
@@ -349,6 +350,28 @@ mod tests {
         for input in INPUTS {
             check(input);
             check(&owned(input));
+        }
+    }
+
+    #[test]
+    fn deref_target_implements_string_bytes_and_borrows_the_same_slice() {
+        fn check<T>(storage: &T, expected: &str)
+        where
+            T: StringBytes + Deref + ?Sized,
+            T::Target: StringBytes,
+        {
+            for _ in 0..3 {
+                let bytes = StringBytes::as_bytes(storage);
+                let target_bytes = StringBytes::as_bytes(T::deref(storage));
+                assert!(std::ptr::eq(bytes, target_bytes));
+                assert_eq!(target_bytes, expected.as_bytes());
+            }
+        }
+
+        for input in INPUTS {
+            check(&owned(input), input);
+            check(&Cow::Borrowed(input), input);
+            check(&Cow::<'_, str>::Owned(owned(input)), input);
         }
     }
 

@@ -62,6 +62,7 @@ impl_string_bytes_for_pointer!(Arc<T> => arc_into_bytes, arc_into_string);
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
+    use std::ops::Deref;
     use std::rc::Rc;
     use std::sync::Arc;
 
@@ -693,6 +694,61 @@ mod tests {
             check(&mut bytes.as_mut_slice());
             check(&mut &mut bytes);
             check(&mut Box::<[u8]>::from(input));
+        }
+    }
+
+    #[test]
+    fn deref_target_implements_string_bytes_and_borrows_the_same_slice() {
+        fn check<T>(storage: &T, expected: &[u8])
+        where
+            T: StringBytes + Deref + ?Sized,
+            T::Target: StringBytes,
+        {
+            for _ in 0..3 {
+                let bytes = StringBytes::as_bytes(storage);
+                let target_bytes = StringBytes::as_bytes(T::deref(storage));
+                assert!(std::ptr::eq(bytes, target_bytes));
+                assert_eq!(target_bytes, expected);
+            }
+        }
+
+        fn check_wrappers<T: StringBytes + Send + Sync>(mut storage: T, expected: &[u8]) {
+            check(&&storage, expected);
+            check(&&mut storage, expected);
+            let boxed = Box::new(storage);
+            check(&boxed, expected);
+            let arc = Arc::new(boxed);
+            check(&arc, expected);
+            let rc = Rc::new(arc);
+            check(&rc, expected);
+        }
+
+        for input in [b"".as_slice(), b"text", b"\0e\xcc\x81", b"ok\xff"] {
+            check(&input, input);
+            check_wrappers(Vec::from(input), input);
+            check(&Box::<[u8]>::from(input), input);
+            check(&Rc::<[u8]>::from(input), input);
+            check(&Arc::<[u8]>::from(input), input);
+
+            // Type erasure must preserve both the bound and the byte view.
+            let mut boxed: Box<dyn StringBytes> = Box::new(Vec::from(input));
+            check(&boxed, input);
+            check(&&*boxed, input);
+            check(&&mut *boxed, input);
+            let rc: Rc<dyn StringBytes> = Rc::new(Vec::from(input));
+            check(&rc, input);
+            let arc: Arc<dyn StringBytes + Send + Sync> = Arc::new(Vec::from(input));
+            check(&arc, input);
+        }
+
+        check_wrappers([0_u8; 0], b"");
+        check_wrappers([b'a', 0xff], b"a\xff");
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            check(&input, input.as_bytes());
+            check_wrappers(String::from(input), input.as_bytes());
+            check(&Box::<str>::from(input), input.as_bytes());
+            check(&Rc::<str>::from(input), input.as_bytes());
+            check(&Arc::<str>::from(input), input.as_bytes());
         }
     }
 
