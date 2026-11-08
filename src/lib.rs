@@ -1,4 +1,122 @@
-#![doc = include_str!("../README.md")]
+//! `stringbytes` provides a common interface for string and byte-buffer storage.
+//!
+//! The [`StringBytes`] trait can be used as a bound on the storage parameter of
+//! generic string and byte-buffer types. It is implemented for arrays, slices,
+//! strings, vectors, and shared buffers.
+//!
+//! Implementations expose a consistent byte sequence and preserve it when
+//! converting to [`str`](prim@str) or [`String`]. The bytes need not be valid UTF-8;
+//! validation is performed when needed to borrow them as [`&str`](prim@str) or
+//! convert them into a [`String`].
+//!
+//! ```rust
+//! use stringbytes::StringBytes;
+//!
+//! let bytes = Box::<[u8]>::from("hello".as_bytes());
+//! assert_eq!(bytes.try_borrow_str().unwrap(), "hello");
+//!
+//! // Copy the bytes, keeping the original value.
+//! assert_eq!(bytes.try_to_string().unwrap(), "hello");
+//!
+//! // Consume the box and reuse its allocation.
+//! assert_eq!(bytes.try_into_string().unwrap(), "hello");
+//! ```
+//!
+//! # Methods
+//!
+//! | Method                                 | Result                          | Behavior                                                      |
+//! | -------------------------------------- | ------------------------------- | ------------------------------------------------------------- |
+//! | [`as_bytes()`][as_bytes]               | [`&[u8]`][slice]                | Borrows bytes without allocating, copying, or checking UTF-8. |
+//! | [`try_borrow_str()`][try_borrow_str]   | `Result<&str, Utf8Error>`       | Borrows as [`&str`][str], validating UTF-8 when needed.       |
+//! | [`try_to_string()`][try_to_string]     | `Result<String, FromUtf8Error>` | Copies into a new [`String`], leaving the source unchanged.   |
+//! | [`try_into_string()`][try_into_string] | `Result<String, FromUtf8Error>` | Consumes the value and reuses its allocation when possible.   |
+//!
+//! Passing a reference to [`try_into_string()`][try_into_string]
+//! copies the bytes and leaves the referenced value unchanged.
+//!
+//! For byte sequences, each conversion to [`&str`](prim@str) or [`String`]
+//! validates UTF-8 once.
+//!
+//! For [`str`](prim@str), [`String`], and [`Cow<'_, str>`](Cow), the bytes are already
+//! valid UTF-8. All three string conversion methods skip validation and always
+//! return [`Ok`], including through references and smart pointers to these types.
+//!
+//! # Supported types
+//!
+//! The table shows when [`try_into_string()`][try_into_string] reuses an
+//! allocation; [`try_to_string()`][try_to_string] always copies.
+//! References and smart pointers support `T: StringBytes + ?Sized` and can be nested.
+//!
+//! For unsized [`[u8]`](prim@slice) and [`str`](prim@str), the table lists the
+//! references and owning pointers used for [`try_into_string()`][try_into_string].
+//!
+//! | Type                                          | Reuses allocation | Conditions                                                          |
+//! | --------------------------------------------- | ----------------- | ------------------------------------------------------------------- |
+//! | [`&[u8]`][slice]                              | No                | Copies the borrowed bytes into a new [`String`].                    |
+//! | [`[u8; N]`][array]                            | No                | Copies the inline bytes.                                            |
+//! | [`Vec<u8>`][Vec]                              | **Yes**           | Transfers the existing buffer.                                      |
+//! | [`Cow<'_, [u8]>`][Cow]                        | **Conditional**   | Owned values reuse their buffer; borrowed values are copied.        |
+//! | [`Box<[u8]>`][Box], [`Box<[u8; N]>`][Box]     | **Yes**           | Transfers the boxed allocation.                                     |
+//! | [`Rc<[u8]>`][Rc], [`Arc<[u8]>`][Arc]          | No                | Copies even with unique ownership.                                  |
+//! | [`&str`][str]                                 | No                | Copies the borrowed string into a new [`String`].                   |
+//! | [`String`]                                    | **Yes**           | Transfers the existing buffer.                                      |
+//! | [`Cow<'_, str>`][Cow]                         | **Conditional**   | Owned values reuse their buffer; borrowed values are copied.        |
+//! | [`Box<str>`][Box]                             | **Yes**           | Transfers the boxed allocation.                                     |
+//! | [`Rc<str>`][Rc], [`Arc<str>`][Arc]            | No                | Copies even with unique ownership.                                  |
+//! | [`&T`][reference], [`&mut T`][reference]      | No                | Copies the referenced data, leaving the source unchanged.           |
+//! | [`Box<T>`][Box] for other sized `T`           | **Follows `T`**   | Uses the contained value's conversion.                              |
+//! | [`Rc<T>`][Rc], [`Arc<T>`][Arc] with sized `T` | **Conditional**   | Unique ownership uses `T`'s conversion; shared contents are copied. |
+//!
+//! For sized `T`, [`Rc<T>`] and [`Arc<T>`] take ownership of the inner value when only
+//! one strong reference remains, using [`Rc::try_unwrap`] or [`Arc::try_unwrap`];
+//! [`rc::Weak`](std::rc::Weak) and [`sync::Weak`](std::sync::Weak) pointers do not
+//! prevent this. Conversion then follows the inner type's rules. If another strong
+//! reference remains, the bytes are copied:
+//!
+//! ```rust
+//! use std::rc::Rc;
+//! use stringbytes::StringBytes;
+//!
+//! let storage = Rc::new(String::from("hello"));
+//! let address = storage.as_bytes().as_ptr();
+//!
+//! let copy = Rc::clone(&storage).try_into_string().unwrap();
+//! assert_eq!(copy, "hello");
+//! assert_ne!(copy.as_ptr(), address);
+//!
+//! let weak = Rc::downgrade(&storage);
+//! let string = storage.try_into_string().unwrap();
+//! assert_eq!(string.as_ptr(), address);
+//! assert!(weak.upgrade().is_none());
+//! ```
+//!
+//! # The `bytes` feature
+//!
+//! Enable the `bytes` feature to use [`StringBytes`] with `bytes::Bytes` and
+//! `bytes::BytesMut`. This feature is disabled by default.
+//!
+//! [`try_into_string()`][try_into_string] converts these types through
+//! [`Vec<u8>`], reusing the allocation when possible. `Bytes` copies static data,
+//! shared buffers, and storage supplied by `from_owner`. `BytesMut` copies while
+//! its buffer is shared. Reusing a sliced buffer may move bytes within the same
+//! allocation.
+//!
+// cargo-rdme 2.2.3 uses required-method anchors for provided trait methods.
+// Use explicit rustdoc fragments for the three provided methods below.
+//! [as_bytes]: StringBytes::as_bytes
+//! [slice]: prim@slice
+//! [try_borrow_str]: StringBytes#method.try_borrow_str
+//! [str]: prim@str
+//! [try_to_string]: StringBytes#method.try_to_string
+//! [`String`]: String
+//! [try_into_string]: StringBytes#method.try_into_string
+//! [array]: prim@array
+//! [Vec]: Vec
+//! [Cow]: Cow
+//! [Box]: Box
+//! [Rc]: Rc
+//! [Arc]: Arc
+//! [reference]: prim@reference
 
 use std::borrow::Cow;
 use std::rc::Rc;
@@ -11,11 +129,11 @@ use bytes::{Bytes, BytesMut};
 
 mod sealed;
 
-/// A trait for byte sequences and UTF-8 strings.
+/// A common interface for string and byte-buffer storage.
 ///
-/// Types implementing `StringBytes` can be used as the storage parameter of
+/// Types implementing [`StringBytes`] can be used as the storage parameter of
 /// generic string and byte-buffer types. Implementations expose a consistent
-/// byte sequence and preserve it when converting to `str` or [`String`].
+/// byte sequence and preserve it when converting to [`str`](prim@str) or [`String`].
 ///
 /// The bytes need not be valid UTF-8. [`as_bytes`](Self::as_bytes) borrows them
 /// directly, while [`try_borrow_str`](Self::try_borrow_str) checks UTF-8 when
@@ -31,14 +149,15 @@ mod sealed;
 ///
 /// - [`Self::as_bytes`] returns the same bytes unless the value is modified
 ///   through mutable or owned access. Interior mutability must not change the
-///   bytes exposed by this method, `AsRef<[u8]>`, or `AsMut<[u8]>`.
-/// - If `AsRef<[u8]>` is implemented, it borrows the same slice as `as_bytes`.
-/// - If `AsMut<[u8]>` is implemented, it mutably borrows that same slice.
+///   bytes exposed by this method, [`AsRef<[u8]>`](AsRef), or [`AsMut<[u8]>`](AsMut).
+/// - If [`AsRef<[u8]>`](AsRef) is implemented, it borrows the same slice as
+///   [`as_bytes`](Self::as_bytes).
+/// - If [`AsMut<[u8]>`](AsMut) is implemented, it mutably borrows that same slice.
 /// - Successful calls to [`Self::try_borrow_str`], [`Self::try_to_string`], and
-///   [`Self::try_into_string`] preserve the bytes returned by `as_bytes`.
+///   [`Self::try_into_string`] preserve the bytes returned by [`as_bytes`](Self::as_bytes).
 ///
-/// The rules for `AsRef` and `AsMut` apply only when those traits are
-/// implemented; they are not required by `StringBytes`.
+/// The rules for [`AsRef`] and [`AsMut`] apply only when those traits are
+/// implemented; they are not required by [`StringBytes`].
 ///
 /// # Dyn compatibility
 ///
@@ -67,7 +186,7 @@ pub trait StringBytes: sealed::Sealed {
     ///
     /// The slice borrows directly from `self`; no allocation or copying is
     /// needed. Byte sequences are validated on each call. Types that already
-    /// guarantee UTF-8 skip validation and always return `Ok`.
+    /// guarantee UTF-8 skip validation and always return [`Ok`].
     ///
     /// # Errors
     ///
@@ -90,7 +209,7 @@ pub trait StringBytes: sealed::Sealed {
     /// Copies the bytes into a [`String`], leaving `self` unchanged.
     ///
     /// Byte sequences are validated once per call. Types that already
-    /// guarantee UTF-8 are copied without validation and always return `Ok`.
+    /// guarantee UTF-8 are copied without validation and always return [`Ok`].
     ///
     /// # Errors
     ///
@@ -120,21 +239,22 @@ pub trait StringBytes: sealed::Sealed {
     /// referenced value is left unchanged.
     ///
     /// Byte sequences are validated once. Types that already guarantee UTF-8
-    /// skip validation and always return `Ok`.
+    /// skip validation and always return [`Ok`].
     ///
     /// # Allocation reuse
     ///
     /// - [`Vec<u8>`] and [`String`] keep their buffer and capacity.
-    /// - `Box<[u8]>`, `Box<[u8; N]>`, and `Box<str>` reuse their allocation.
+    /// - [`Box<[u8]>`](Box), [`Box<[u8; N]>`](Box), and [`Box<str>`] reuse their allocation.
     ///   Other boxed values are moved out and converted according to their type.
     /// - [`Cow`] reuses owned storage and copies borrowed storage.
-    /// - [`Rc<T>`](Rc) and [`Arc<T>`](Arc), where `T: Sized`, take ownership of
+    /// - [`Rc<T>`] and [`Arc<T>`], where `T: Sized`, take ownership of
     ///   the inner value when only one strong reference remains, then use `T`'s
     ///   conversion. Otherwise, they copy the bytes. Weak references do not
-    ///   prevent this. `Rc<[u8]>`, `Arc<[u8]>`, `Rc<str>`, and `Arc<str>` always copy.
+    ///   prevent this. [`Rc<[u8]>`](Rc), [`Arc<[u8]>`](Arc), [`Rc<str>`], and
+    ///   [`Arc<str>`] always copy.
     /// - References and unboxed byte arrays are copied.
     /// - With the `bytes` feature, `Bytes` and `BytesMut` use their conversion to
-    ///   `Vec<u8>`. Static data, shared buffers, and `Bytes::from_owner` storage
+    ///   [`Vec<u8>`]. Static data, shared buffers, and `Bytes::from_owner` storage
     ///   are copied. Reusing a sliced buffer may move bytes within its allocation.
     ///
     /// Nested wrappers and trait objects follow the same conversion rules.
@@ -175,7 +295,7 @@ pub trait StringBytes: sealed::Sealed {
     ///
     /// Boxed byte slices, byte arrays, and strings reuse their allocation.
     /// Other boxed values are moved out and converted with [`Self::try_into_string`].
-    /// This also supports `Box<dyn StringBytes>`.
+    /// This also supports [`Box<dyn StringBytes>`](Box).
     ///
     /// # Errors
     ///
@@ -191,7 +311,7 @@ pub trait StringBytes: sealed::Sealed {
     /// Converts the contents of an [`Rc`] into a [`String`].
     ///
     /// With one strong owner, sized contents are moved out and converted with
-    /// [`Self::try_into_string`]. Shared contents, slices, and `str` are copied.
+    /// [`Self::try_into_string`]. Shared contents, slices, and [`str`](prim@str) are copied.
     /// Trait objects use their concrete type's conversion.
     ///
     /// # Errors
@@ -207,7 +327,7 @@ pub trait StringBytes: sealed::Sealed {
     /// Converts the contents of an [`Arc`] into a [`String`].
     ///
     /// With one strong owner, sized contents are moved out and converted with
-    /// [`Self::try_into_string`]. Shared contents, slices, and `str` are copied.
+    /// [`Self::try_into_string`]. Shared contents, slices, and [`str`](prim@str) are copied.
     /// Trait objects use their concrete type's conversion.
     ///
     /// # Errors

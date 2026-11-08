@@ -20,3 +20,12 @@ jobs:
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
+    # Pin the generator so its output stays consistent across runs.
+    - name: Install cargo-rdme
+      run: cargo install cargo-rdme --version 2.2.3 --locked
+    # Resolving rustdoc links requires the nightly version selected by cargo-rdme.
+    - name: Install rustdoc toolchain for README links
+      run: cargo rdme install-rust-toolchain-for-intralinks
+    # Fail if README.md is out of sync with the crate documentation in src/lib.rs.
+    - name: Check README
+      run: cargo rdme --check
