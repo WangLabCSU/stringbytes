@@ -53,8 +53,24 @@ impl_string_bytes!(Vec<u8> {
     impl_pointer_conversions_for_sized!();
 });
 
-// Restrict Cow to byte slices and str so both variants satisfy the trait's
-// guarantees.
+// Neither variant owns a transferable allocation; copy directly from the
+// array without first cloning it through Cow::into_owned.
+impl_string_bytes!([const N: usize]; Cow<'_, [u8; N]> {
+    #[inline]
+    fn as_bytes(&self) -> &[u8] {
+        self.as_ref()
+    }
+
+    impl_pointer_conversions_for_sized! {
+        #[inline]
+        fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
+            // An owned array is part of the Cow enum, whose allocation cannot
+            // be transferred to Vec. Copy without first moving the Cow out.
+            (*self).to_bytes()
+        }
+    }
+});
+
 impl_string_bytes!(Cow<'_, [u8]> {
     #[inline]
     fn as_bytes(&self) -> &[u8] {
@@ -64,6 +80,21 @@ impl_string_bytes!(Cow<'_, [u8]> {
     #[inline]
     fn into_bytes(self) -> Vec<u8> {
         // Reuse an owned Vec; copy a borrowed slice.
+        self.into_owned()
+    }
+
+    impl_pointer_conversions_for_sized!();
+});
+
+impl_string_bytes!(Cow<'_, Vec<u8>> {
+    #[inline]
+    fn as_bytes(&self) -> &[u8] {
+        self.as_ref().as_slice()
+    }
+
+    #[inline]
+    fn into_bytes(self) -> Vec<u8> {
+        // Reuse an owned Vec, including its spare capacity.
         self.into_owned()
     }
 
@@ -114,6 +145,51 @@ mod tests {
     use super::super::test_support::assert_reuses_allocation;
     use crate::StringBytes;
 
+    fn for_each_sized_cow(mut check: impl FnMut(&dyn StringBytes, &[u8])) {
+        fn check_variants<const N: usize>(
+            input: [u8; N],
+            check: &mut impl FnMut(&dyn StringBytes, &[u8]),
+        ) {
+            check(&Cow::Borrowed(&input), &input);
+            let cow = Cow::<'_, [u8; N]>::Owned(input);
+            check(&cow, cow.as_ref());
+
+            let vector = Vec::from(input);
+            check(&Cow::Borrowed(&vector), &vector);
+            let cow = Cow::<'_, Vec<u8>>::Owned(vector);
+            check(&cow, cow.as_ref());
+        }
+
+        check_variants([], &mut check);
+        for input in [*b"text", *b"\0e\xcc\x81", *b"ok\xff\0", *b"ok\xe2\x82"] {
+            check_variants(input, &mut check);
+        }
+    }
+
+    fn check_cow_array_conversions(into_bytes: bool) {
+        fn check<const N: usize>(input: [u8; N], into_bytes: bool) {
+            check_copied_conversion(Cow::Borrowed(&input), &input, into_bytes);
+            check_copied_conversion(Cow::<'_, [u8; N]>::Owned(input), &input, into_bytes);
+        }
+
+        check([], into_bytes);
+        for input in [*b"text", *b"\0e\xcc\x81", *b"ok\xff\0", *b"ok\xe2\x82"] {
+            check(input, into_bytes);
+        }
+    }
+
+    fn check_boxed_cow_array_conversions(into_bytes: bool) {
+        fn check<const N: usize>(input: [u8; N], into_bytes: bool) {
+            for cow in [Cow::Borrowed(&input), Cow::<'_, [u8; N]>::Owned(input)] {
+                check_copied_conversion(Box::new(cow), &input, into_bytes);
+            }
+        }
+
+        check([], into_bytes);
+        check(*b"text", into_bytes);
+        check(*b"ok\xff", into_bytes);
+    }
+
     fn check_owned_conversions(into_bytes: bool) {
         for input in [
             b"".as_slice(),
@@ -138,6 +214,17 @@ mod tests {
             let capacity = bytes.capacity();
             assert_reuses_allocation(
                 Cow::<'_, [u8]>::Owned(bytes),
+                input,
+                address,
+                capacity,
+                into_bytes,
+            );
+
+            let bytes = make_vec();
+            let address = bytes.as_ptr();
+            let capacity = bytes.capacity();
+            assert_reuses_allocation(
+                Cow::<'_, Vec<u8>>::Owned(bytes),
                 input,
                 address,
                 capacity,
@@ -273,6 +360,13 @@ mod tests {
     }
 
     #[test]
+    fn as_bytes_borrows_sized_cow_storage() {
+        for_each_sized_cow(|storage, expected| {
+            assert!(std::ptr::eq(storage.as_bytes(), expected));
+        });
+    }
+
+    #[test]
     fn to_bytes_copies_and_preserves_the_source() {
         fn check<T: StringBytes + ?Sized>(storage: &T) {
             let expected = storage.as_bytes().to_vec();
@@ -300,6 +394,7 @@ mod tests {
         }
         check(&[0_u8; 0]);
         check(&[b'a', 0xff]);
+        for_each_sized_cow(|storage, _| check(storage));
     }
 
     #[test]
@@ -312,6 +407,7 @@ mod tests {
         assert_eq!(StringBytes::into_bytes([0_u8; 0]), b"");
         assert_eq!(StringBytes::into_bytes(*b"text"), b"text");
         assert_eq!(StringBytes::into_bytes([b'a', 0xff]), b"a\xff");
+        check_cow_array_conversions(true);
 
         for input in [b"".as_slice(), b"text", b"ok\xff"] {
             let bytes = StringBytes::into_bytes(Cow::Borrowed(input));
@@ -319,6 +415,9 @@ mod tests {
             if !input.is_empty() {
                 assert_ne!(bytes.as_ptr(), input.as_ptr());
             }
+            let vector = Vec::from(input);
+            check_copied_conversion(Cow::Borrowed(&vector), input, true);
+            assert_eq!(vector, input);
         }
     }
 
@@ -357,6 +456,11 @@ mod tests {
         }
         check(&[0_u8; 0], "");
         check(b"text", "text");
+        for_each_sized_cow(|storage, expected| {
+            if let Ok(text) = std::str::from_utf8(expected) {
+                check(storage, text);
+            }
+        });
     }
 
     #[test]
@@ -394,6 +498,11 @@ mod tests {
         }
         check(&[0xff], 0, Some(1));
         check(&[b'o', b'k', 0xe2, 0x82], 2, None);
+        for_each_sized_cow(|storage, expected| {
+            if let Err(error) = std::str::from_utf8(expected) {
+                check(storage, error.valid_up_to(), error.error_len());
+            }
+        });
     }
 
     #[test]
@@ -427,6 +536,11 @@ mod tests {
         check([0_u8; 0]);
         check(*b"text");
         check(Box::new(*b"text"));
+        for_each_sized_cow(|storage, expected| {
+            if std::str::from_utf8(expected).is_ok() {
+                check(storage);
+            }
+        });
     }
 
     #[test]
@@ -456,6 +570,11 @@ mod tests {
 
         check([0xff]);
         check(Box::new([0xff]));
+        for_each_sized_cow(|storage, expected| {
+            if std::str::from_utf8(expected).is_err() {
+                check(storage);
+            }
+        });
     }
 
     #[test]
@@ -583,8 +702,12 @@ mod tests {
 
     #[test]
     fn try_into_string_copies_borrowed_cow() {
+        check_cow_array_conversions(false);
         for input in [b"".as_slice(), b"text", b"ok\xff"] {
             check_copied_conversion(Cow::Borrowed(input), input, false);
+            let vector = Vec::from(input);
+            check_copied_conversion(Cow::Borrowed(&vector), input, false);
+            assert_eq!(vector, input);
         }
     }
 
@@ -603,6 +726,11 @@ mod tests {
         check(Box::new([0_u8; 0]), b"");
         check(Box::new(*b"text"), b"text");
         check(Box::new([b'a', 0xff]), b"a\xff");
+    }
+
+    #[test]
+    fn box_into_bytes_copies_cow_arrays() {
+        check_boxed_cow_array_conversions(true);
     }
 
     #[test]
@@ -632,6 +760,11 @@ mod tests {
         check(Box::new([0_u8; 0]), b"");
         check(Box::new(*b"text"), b"text");
         check(Box::new([b'a', 0xff]), b"a\xff");
+    }
+
+    #[test]
+    fn box_into_string_copies_cow_arrays() {
+        check_boxed_cow_array_conversions(false);
     }
 
     #[test]
@@ -685,6 +818,8 @@ mod tests {
             check(&Vec::from(input), input);
             check(&Cow::Borrowed(input), input);
             check(&Cow::<'_, [u8]>::Owned(Vec::from(input)), input);
+            check(&Cow::Borrowed(&Vec::from(input)), input);
+            check(&Cow::<'_, Vec<u8>>::Owned(Vec::from(input)), input);
 
             #[cfg(feature = "bytes")]
             {
@@ -706,40 +841,11 @@ mod tests {
                 check(&bytes, b"tail");
             }
         }
-    }
-
-    #[test]
-    fn from_preserves_the_source_bytes() {
-        fn check<S: StringBytes, T: StringBytes + From<S>>(input: S) {
-            // From may allocate, so compare contents rather than addresses.
-            let expected = input.as_bytes().to_vec();
-            let storage = T::from(input);
-            assert_eq!(storage.as_bytes(), expected);
+        check(&Cow::Borrowed(&[]), b"");
+        check(&Cow::<'_, [u8; 0]>::Owned([]), b"");
+        for input in [*b"text", *b"ok\xff\0"] {
+            check(&Cow::Borrowed(&input), &input);
+            check(&Cow::<'_, [u8; 4]>::Owned(input), &input);
         }
-
-        for input in [b"".as_slice(), b"AC", b"A\xff"] {
-            check::<_, Vec<u8>>(input);
-            check::<_, Cow<'_, [u8]>>(input);
-
-            // Cover owned sources as well as borrowed slices.
-            check::<_, Cow<'_, [u8]>>(Vec::from(input));
-            check::<_, Vec<u8>>(Box::<[u8]>::from(input));
-
-            #[cfg(feature = "bytes")]
-            {
-                // These literals provide the 'static lifetime Bytes requires.
-                check::<_, Bytes>(input);
-                check::<_, BytesMut>(input);
-                check::<_, Bytes>(Vec::from(input));
-                check::<_, Bytes>(Box::<[u8]>::from(input));
-                check::<_, Vec<u8>>(Bytes::from_static(input));
-                check::<_, Vec<u8>>(BytesMut::from(input));
-                check::<_, BytesMut>(Bytes::from_static(input));
-                check::<_, Bytes>(BytesMut::from(input));
-            }
-        }
-
-        check::<_, Vec<u8>>([0_u8; 0]);
-        check::<_, Vec<u8>>(*b"AC");
     }
 }

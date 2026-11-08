@@ -14,16 +14,12 @@
 The [`StringBytes`](https://docs.rs/stringbytes/latest/stringbytes/trait.StringBytes.html) trait can be used as a bound on the storage parameter of
 generic string and byte-buffer types.
 
-Implementations are provided for [`[u8; N]`](https://doc.rust-lang.org/stable/std/primitive.array.html), [`[u8]`](https://doc.rust-lang.org/stable/std/primitive.slice.html),
-[`Vec<u8>`](https://doc.rust-lang.org/stable/alloc/vec/struct.Vec.html), and [`Cow<'_, [u8]>`](https://doc.rust-lang.org/stable/alloc/borrow/enum.Cow.html); [`str`](https://doc.rust-lang.org/stable/std/primitive.str.html), [`String`](https://doc.rust-lang.org/stable/alloc/string/struct.String.html), and
-[`Cow<'_, str>`](https://doc.rust-lang.org/stable/alloc/borrow/enum.Cow.html); and [`&T`](https://doc.rust-lang.org/stable/std/primitive.reference.html), [`&mut T`](https://doc.rust-lang.org/stable/std/primitive.reference.html),
-[`Box<T>`](https://doc.rust-lang.org/stable/alloc/boxed/struct.Box.html), [`Rc<T>`](https://doc.rust-lang.org/stable/alloc/rc/struct.Rc.html), and [`Arc<T>`](https://doc.rust-lang.org/stable/alloc/sync/struct.Arc.html) where `T: StringBytes + ?Sized`.
-The optional `bytes` feature adds [`Bytes`](https://docs.rs/bytes/latest/bytes/bytes/struct.Bytes.html) and [`BytesMut`](https://docs.rs/bytes/latest/bytes/bytes_mut/struct.BytesMut.html).
+Both borrowed and owned storage are supported, including shared buffers.
 
 Implementations expose a consistent byte sequence and preserve it when
-converting to [`Vec<u8>`](https://doc.rust-lang.org/stable/alloc/vec/struct.Vec.html), [`str`](https://doc.rust-lang.org/stable/std/primitive.str.html), or [`String`](https://doc.rust-lang.org/stable/alloc/string/struct.String.html). The bytes need not
-be valid UTF-8; validation is performed when needed to borrow them as
-[`&str`](https://doc.rust-lang.org/stable/std/primitive.str.html) or convert them into a [`String`](https://doc.rust-lang.org/stable/alloc/string/struct.String.html).
+borrowing as [`&str`](https://doc.rust-lang.org/stable/std/primitive.str.html) or converting into [`Vec<u8>`](https://doc.rust-lang.org/stable/alloc/vec/struct.Vec.html) or [`String`](https://doc.rust-lang.org/stable/alloc/string/struct.String.html).
+The bytes need not be valid UTF-8; validation is performed when needed to
+borrow them as [`&str`](https://doc.rust-lang.org/stable/std/primitive.str.html) or convert them into a [`String`](https://doc.rust-lang.org/stable/alloc/string/struct.String.html).
 
 ## Examples
 

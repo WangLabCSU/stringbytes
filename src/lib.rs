@@ -3,16 +3,12 @@
 //! The [`StringBytes`] trait can be used as a bound on the storage parameter of
 //! generic string and byte-buffer types.
 //!
-//! Implementations are provided for [`[u8; N]`](prim@array), [`[u8]`](prim@slice),
-//! [`Vec<u8>`], and [`Cow<'_, [u8]>`](Cow); [`str`](prim@str), [`String`], and
-//! [`Cow<'_, str>`](Cow); and [`&T`](prim@reference), [`&mut T`](prim@reference),
-//! [`Box<T>`], [`Rc<T>`], and [`Arc<T>`] where `T: StringBytes + ?Sized`.
-//! The optional `bytes` feature adds [`Bytes`] and [`BytesMut`].
+//! Both borrowed and owned storage are supported, including shared buffers.
 //!
 //! Implementations expose a consistent byte sequence and preserve it when
-//! converting to [`Vec<u8>`], [`str`](prim@str), or [`String`]. The bytes need not
-//! be valid UTF-8; validation is performed when needed to borrow them as
-//! [`&str`](prim@str) or convert them into a [`String`].
+//! borrowing as [`&str`](prim@str) or converting into [`Vec<u8>`] or [`String`].
+//! The bytes need not be valid UTF-8; validation is performed when needed to
+//! borrow them as [`&str`](prim@str) or convert them into a [`String`].
 //!
 //! # Examples
 //!
@@ -100,15 +96,10 @@
 //! # Ok::<(), std::string::FromUtf8Error>(())
 //! ```
 
-#[cfg(doc)]
-use std::borrow::Cow;
 use std::rc::Rc;
 use std::str::{self, Utf8Error};
 use std::string::FromUtf8Error;
 use std::sync::Arc;
-
-#[cfg(all(doc, feature = "bytes"))]
-use bytes::{Bytes, BytesMut};
 
 mod impls;
 mod sealed;
@@ -117,8 +108,8 @@ mod sealed;
 ///
 /// Types implementing [`StringBytes`] can be used as the storage parameter of
 /// generic string and byte-buffer types. Implementations expose a consistent
-/// byte sequence and preserve it when converting to [`Vec<u8>`], [`str`](prim@str),
-/// or [`String`].
+/// byte sequence and preserve it when borrowing as [`&str`](prim@str) or
+/// converting into [`Vec<u8>`] or [`String`].
 ///
 /// The bytes need not be valid UTF-8. [`as_bytes`](Self::as_bytes) borrows them
 /// directly, [`to_bytes`](Self::to_bytes) copies them, and
@@ -204,25 +195,6 @@ pub trait StringBytes: sealed::Sealed {
     /// Reuses the existing allocation where possible and copies the bytes
     /// otherwise. This method does not validate UTF-8.
     ///
-    /// # Allocation reuse
-    ///
-    /// - [`&T`](prim@reference), [`&mut T`](prim@reference), and
-    ///   [`[u8; N]`](prim@array) are copied.
-    /// - [`Vec<u8>`] and [`String`] keep their buffer and capacity.
-    /// - [`Cow`] reuses owned storage and copies borrowed storage.
-    /// - [`Box<[u8]>`](Box), [`Box<[u8; N]>`](Box), and [`Box<str>`] reuse their allocation.
-    ///   For other sized `T`, [`Box<T>`] moves out the value and uses `T`'s conversion.
-    /// - [`Rc<T>`] and [`Arc<T>`], where `T` is [`Sized`], take ownership of
-    ///   the inner value when only one strong reference remains, then use `T`'s
-    ///   conversion. Otherwise, they copy the bytes. [`rc::Weak`](std::rc::Weak)
-    ///   and [`sync::Weak`](std::sync::Weak) pointers do not prevent this.
-    ///   [`Rc<[u8]>`](Rc), [`Arc<[u8]>`](Arc), [`Rc<str>`], and [`Arc<str>`] always copy.
-    /// - With the `bytes` feature, [`Bytes`] and [`BytesMut`] use their conversion to
-    ///   [`Vec<u8>`]. Static data, shared buffers, and [`Bytes::from_owner`] storage
-    ///   are copied. Reusing a sliced buffer may move bytes within its allocation.
-    ///
-    /// Nested wrappers and trait objects follow the same conversion rules.
-    ///
     /// # Examples
     ///
     /// ```
@@ -299,14 +271,10 @@ pub trait StringBytes: sealed::Sealed {
     /// Converts `self` into a [`String`], consuming the value.
     ///
     /// Reuses the existing allocation where possible and copies the bytes
-    /// otherwise.
+    /// otherwise, as with [`into_bytes`](Self::into_bytes).
     ///
     /// Byte sequences are validated once. Types that already guarantee UTF-8
     /// skip validation and always return [`Ok`].
-    ///
-    /// # Allocation reuse
-    ///
-    /// Follows the same allocation rules as [`into_bytes`](Self::into_bytes).
     ///
     /// # Errors
     ///
@@ -345,7 +313,7 @@ pub trait StringBytes: sealed::Sealed {
     /// Converts the contents of a [`Box`] into a [`Vec<u8>`].
     ///
     /// Boxed byte slices, byte arrays, and strings reuse their allocation.
-    /// Other boxed values are moved out and converted with [`Self::into_bytes`].
+    /// Other boxed values follow the allocation rules of [`Self::into_bytes`].
     /// This also supports [`Box<dyn StringBytes>`](Box).
     #[doc(hidden)]
     #[inline]
@@ -384,7 +352,7 @@ pub trait StringBytes: sealed::Sealed {
     /// Converts the contents of a [`Box`] into a [`String`].
     ///
     /// Boxed byte slices, byte arrays, and strings reuse their allocation.
-    /// Other boxed values are moved out and converted with [`Self::try_into_string`].
+    /// Other boxed values follow the allocation rules of [`Self::try_into_string`].
     /// This also supports [`Box<dyn StringBytes>`](Box).
     ///
     /// # Errors

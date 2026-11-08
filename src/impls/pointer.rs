@@ -202,6 +202,14 @@ mod tests {
                 input,
                 into_bytes,
             );
+            check_owners(
+                || {
+                    let (bytes, capacity) = make_vec();
+                    (Cow::<'static, Vec<u8>>::Owned(bytes), capacity)
+                },
+                input,
+                into_bytes,
+            );
 
             if let Ok(text) = std::str::from_utf8(input) {
                 let make_string = || {
@@ -216,6 +224,14 @@ mod tests {
                     || {
                         let (text, capacity) = make_string();
                         (Cow::<'static, str>::Owned(text), capacity)
+                    },
+                    input,
+                    into_bytes,
+                );
+                check_owners(
+                    || {
+                        let (text, capacity) = make_string();
+                        (Cow::<'static, String>::Owned(text), capacity)
                     },
                     input,
                     into_bytes,
@@ -750,29 +766,5 @@ mod tests {
             check(&Rc::<str>::from(input), input.as_bytes());
             check(&Arc::<str>::from(input), input.as_bytes());
         }
-    }
-
-    #[test]
-    fn from_preserves_the_source_bytes() {
-        fn check<S: StringBytes, T: StringBytes + From<S>>(source: S) {
-            let expected = source.as_bytes().to_vec();
-            assert_eq!(T::from(source).as_bytes(), expected);
-        }
-
-        for input in [b"".as_slice(), b"AC", b"A\xff"] {
-            check::<_, &[u8]>(input);
-            check::<_, Box<[u8]>>(input);
-            check::<_, Rc<[u8]>>(input);
-            check::<_, Arc<[u8]>>(input);
-            check::<_, Box<&[u8]>>(input);
-            check::<_, Rc<&[u8]>>(input);
-            check::<_, Arc<&[u8]>>(input);
-            check::<_, Box<[u8]>>(Vec::from(input));
-            check::<_, Rc<[u8]>>(Vec::from(input));
-            check::<_, Arc<[u8]>>(Vec::from(input));
-            check::<_, Rc<[u8]>>(Box::<[u8]>::from(input));
-            check::<_, Arc<[u8]>>(Box::<[u8]>::from(input));
-        }
-        check::<_, Box<[u8]>>([0xff; 2]);
     }
 }

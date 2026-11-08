@@ -20,7 +20,7 @@ jobs:
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
-    # Match docs.rs features so links to optional bytes APIs can be checked.
+    # Check documentation with the same features as docs.rs.
     - name: Check documentation
       env:
         RUSTDOCFLAGS: -D warnings

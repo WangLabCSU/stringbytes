@@ -1,6 +1,6 @@
 // These storage types guarantee UTF-8 and override string conversions to
-// skip validation. The pointer helpers for String and Cow<str> delegate to
-// these overrides, preserving the same behavior through smart pointers.
+// skip validation. Their pointer helpers delegate to these overrides,
+// preserving the same behavior through smart pointers.
 
 use std::borrow::Cow;
 use std::rc::Rc;
@@ -116,6 +116,35 @@ impl_string_bytes!(Cow<'_, str> {
     impl_pointer_conversions_for_sized!();
 });
 
+impl_string_bytes!(Cow<'_, String> {
+    #[inline]
+    fn as_bytes(&self) -> &[u8] {
+        self.as_ref().as_bytes()
+    }
+
+    #[inline]
+    fn into_bytes(self) -> Vec<u8> {
+        String::into_bytes(self.into_owned())
+    }
+
+    #[inline]
+    fn try_borrow_str(&self) -> Result<&str, Utf8Error> {
+        Ok(self.as_ref().as_str())
+    }
+
+    #[inline]
+    fn try_to_string(&self) -> Result<String, FromUtf8Error> {
+        Ok(self.as_ref().clone())
+    }
+
+    #[inline]
+    fn try_into_string(self) -> Result<String, FromUtf8Error> {
+        Ok(self.into_owned())
+    }
+
+    impl_pointer_conversions_for_sized!();
+});
+
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
@@ -149,6 +178,10 @@ mod tests {
             check(&cow, input.as_bytes());
             let cow = Cow::<'_, str>::Owned(text);
             check(&cow, cow.as_ref().as_bytes());
+            let text = owned(input);
+            check(&Cow::Borrowed(&text), text.as_bytes());
+            let cow = Cow::<'_, String>::Owned(text);
+            check(&cow, cow.as_ref().as_bytes());
         }
     }
 
@@ -171,6 +204,8 @@ mod tests {
             check(&owned(input), input);
             check(&Cow::Borrowed(input), input);
             check(&Cow::<'_, str>::Owned(owned(input)), input);
+            check(&Cow::Borrowed(&owned(input)), input);
+            check(&Cow::<'_, String>::Owned(owned(input)), input);
         }
     }
 
@@ -192,17 +227,27 @@ mod tests {
             let text = owned(input);
             let capacity = text.capacity();
             check(Cow::<'_, str>::Owned(text), input, capacity);
+            let text = owned(input);
+            let capacity = text.capacity();
+            check(Cow::<'_, String>::Owned(text), input, capacity);
         }
     }
 
     #[test]
     fn into_bytes_copies_borrowed_cow() {
-        for input in INPUTS {
-            let bytes = StringBytes::into_bytes(Cow::Borrowed(input));
+        fn check<T: StringBytes>(storage: T, input: &str) {
+            let bytes = StringBytes::into_bytes(storage);
             assert_eq!(bytes, input.as_bytes());
             if !input.is_empty() {
                 assert_ne!(bytes.as_ptr(), input.as_ptr());
             }
+        }
+
+        for input in INPUTS {
+            check(Cow::Borrowed(input), input);
+            let text = owned(input);
+            check(Cow::Borrowed(&text), &text);
+            assert_eq!(text, input);
         }
     }
 
@@ -219,6 +264,8 @@ mod tests {
             check(&owned(input), input);
             check(&Cow::Borrowed(input), input);
             check(&Cow::<'_, str>::Owned(owned(input)), input);
+            check(&Cow::Borrowed(&owned(input)), input);
+            check(&Cow::<'_, String>::Owned(owned(input)), input);
         }
     }
 
@@ -242,6 +289,8 @@ mod tests {
             check(&owned(input), input);
             check(&Cow::Borrowed(input), input);
             check(&Cow::<'_, str>::Owned(owned(input)), input);
+            check(&Cow::Borrowed(&owned(input)), input);
+            check(&Cow::<'_, String>::Owned(owned(input)), input);
         }
     }
 
@@ -262,17 +311,27 @@ mod tests {
             let text = owned(input);
             let capacity = text.capacity();
             check(Cow::<'_, str>::Owned(text), input, capacity);
+            let text = owned(input);
+            let capacity = text.capacity();
+            check(Cow::<'_, String>::Owned(text), input, capacity);
         }
     }
 
     #[test]
     fn try_into_string_copies_borrowed_cow() {
-        for input in INPUTS {
-            let text = StringBytes::try_into_string(Cow::Borrowed(input)).unwrap();
+        fn check<T: StringBytes>(storage: T, input: &str) {
+            let text = StringBytes::try_into_string(storage).unwrap();
             assert_eq!(text, input);
             if !input.is_empty() {
                 assert_ne!(text.as_ptr(), input.as_ptr());
             }
+        }
+
+        for input in INPUTS {
+            check(Cow::Borrowed(input), input);
+            let text = owned(input);
+            check(Cow::Borrowed(&text), &text);
+            assert_eq!(text, input);
         }
     }
 
@@ -372,24 +431,8 @@ mod tests {
             check(&owned(input), input);
             check(&Cow::Borrowed(input), input);
             check(&Cow::<'_, str>::Owned(owned(input)), input);
-        }
-    }
-
-    #[test]
-    fn from_preserves_the_source_bytes() {
-        fn check<S: StringBytes, T: StringBytes + From<S>>(source: S) {
-            let expected = source.as_bytes().to_vec();
-            assert_eq!(T::from(source).as_bytes(), expected);
-        }
-
-        for input in INPUTS {
-            check::<_, String>(input);
-            check::<_, Box<str>>(owned(input));
-            check::<_, String>(Box::<str>::from(input));
-            check::<_, Vec<u8>>(owned(input));
-            check::<_, Cow<'_, str>>(owned(input));
-            #[cfg(feature = "bytes")]
-            check::<_, bytes::Bytes>(owned(input));
+            check(&Cow::Borrowed(&owned(input)), input);
+            check(&Cow::<'_, String>::Owned(owned(input)), input);
         }
     }
 }

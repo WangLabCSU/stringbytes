@@ -5,7 +5,8 @@ mod string;
 // Sized contents can delegate conversions to the inner value. Boxed arrays
 // instead transfer their own allocation.
 // Delegating string conversions preserves the inner type's UTF-8 fast path,
-// so wrappers around String or Cow<str> do not introduce another check.
+// so wrappers around String, Cow<str>, or Cow<String> do not introduce
+// another check.
 macro_rules! impl_pointer_conversions_for_sized {
     () => {
         impl_pointer_conversions_for_sized! {
@@ -16,7 +17,7 @@ macro_rules! impl_pointer_conversions_for_sized {
 
             #[inline]
             fn box_into_string(self: Box<Self>) -> Result<String, FromUtf8Error> {
-                // Moving out of the Box preserves the inner value's buffer.
+                // Moving out preserves any buffer owned by the inner value.
                 (*self).try_into_string()
             }
         }
