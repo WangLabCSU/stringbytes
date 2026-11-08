@@ -21,9 +21,9 @@ Implementations are provided for [`[u8; N]`](https://doc.rust-lang.org/stable/st
 The optional `bytes` feature adds [`Bytes`](https://docs.rs/bytes/latest/bytes/bytes/struct.Bytes.html) and [`BytesMut`](https://docs.rs/bytes/latest/bytes/bytes_mut/struct.BytesMut.html).
 
 Implementations expose a consistent byte sequence and preserve it when
-converting to [`str`](https://doc.rust-lang.org/stable/std/primitive.str.html) or [`String`](https://doc.rust-lang.org/stable/alloc/string/struct.String.html). The bytes need not be valid UTF-8;
-validation is performed when needed to borrow them as [`&str`](https://doc.rust-lang.org/stable/std/primitive.str.html) or
-convert them into a [`String`](https://doc.rust-lang.org/stable/alloc/string/struct.String.html).
+converting to [`Vec<u8>`](https://doc.rust-lang.org/stable/alloc/vec/struct.Vec.html), [`str`](https://doc.rust-lang.org/stable/std/primitive.str.html), or [`String`](https://doc.rust-lang.org/stable/alloc/string/struct.String.html). The bytes need not
+be valid UTF-8; validation is performed when needed to borrow them as
+[`&str`](https://doc.rust-lang.org/stable/std/primitive.str.html) or convert them into a [`String`](https://doc.rust-lang.org/stable/alloc/string/struct.String.html).
 
 ## Examples
 
@@ -50,6 +50,11 @@ let address = bytes.as_ptr();
 let string = bytes.try_into_string()?;
 assert_eq!(string, "hello");
 assert_eq!(string.as_ptr(), address);
+
+// Convert back to bytes, keeping the same allocation.
+let bytes = string.into_bytes();
+assert_eq!(bytes, b"hello");
+assert_eq!(bytes.as_ptr(), address);
 ```
 
 ### `Box<[u8]>`
@@ -89,6 +94,10 @@ use stringbytes::StringBytes;
 let string = String::from("hello");
 let address = string.as_ptr();
 let capacity = string.capacity();
+
+// Copy the bytes, keeping the string available.
+let bytes = string.to_bytes();
+assert_eq!(bytes, b"hello");
 
 // Consume the string, keeping its allocation and capacity.
 let string = string.try_into_string()?;
