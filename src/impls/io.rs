@@ -27,8 +27,11 @@ mod tests {
     use std::sync::Arc;
 
     use crate::test_utils::{
-        assert_deref_matches_as_bytes, assert_into_bytes_preserves_bytes, assert_stable_bytes,
-        assert_to_bytes_preserves_bytes, assert_try_borrow_str_preserves_bytes,
+        assert_borrow_str_unchecked_preserves_bytes, assert_deref_matches_as_bytes,
+        assert_into_bytes_preserves_bytes, assert_into_string_lossy_matches_std,
+        assert_into_string_unchecked_preserves_bytes, assert_stable_bytes,
+        assert_to_bytes_preserves_bytes, assert_to_string_lossy_matches_std,
+        assert_to_string_unchecked_preserves_bytes, assert_try_borrow_str_preserves_bytes,
         assert_try_into_string_preserves_bytes, assert_try_to_string_preserves_bytes,
     };
     use crate::StringBytes;
@@ -153,6 +156,50 @@ mod tests {
                     assert_ne!(bytes.as_ptr(), address);
                     bytes[0] ^= 0xff;
                 }
+                assert_eq!(buffer, input);
+            }
+        }
+    }
+
+    #[test]
+    fn io_slice_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            for offset in 0..=input.len() {
+                let mut storage = IoSlice::new(input);
+                storage.advance(offset);
+                assert_to_string_lossy_matches_std(&storage);
+                if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                    assert_borrow_str_unchecked_preserves_bytes(&storage);
+                    assert_to_string_unchecked_preserves_bytes(&storage);
+                }
+                if std::str::from_utf8(&input[offset..]).is_ok() {
+                    assert_into_string_unchecked_preserves_bytes(storage);
+                }
+                let mut storage = IoSlice::new(input);
+                storage.advance(offset);
+                assert_into_string_lossy_matches_std(storage);
+            }
+        }
+    }
+
+    #[test]
+    fn io_slice_mut_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            for offset in 0..=input.len() {
+                let mut buffer = input.to_vec();
+                let mut storage = IoSliceMut::new(&mut buffer);
+                storage.advance(offset);
+                assert_to_string_lossy_matches_std(&storage);
+                if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                    assert_borrow_str_unchecked_preserves_bytes(&storage);
+                    assert_to_string_unchecked_preserves_bytes(&storage);
+                }
+                if std::str::from_utf8(&input[offset..]).is_ok() {
+                    assert_into_string_unchecked_preserves_bytes(storage);
+                }
+                let mut storage = IoSliceMut::new(&mut buffer);
+                storage.advance(offset);
+                assert_into_string_lossy_matches_std(storage);
                 assert_eq!(buffer, input);
             }
         }

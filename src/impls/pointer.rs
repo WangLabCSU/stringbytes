@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::rc::Rc;
 use std::str::Utf8Error;
 use std::string::FromUtf8Error;
@@ -42,6 +43,11 @@ macro_rules! impl_string_bytes_for_pointer {
                 }
 
                 #[inline]
+                fn to_string_lossy(&self) -> Cow<'_, str> {
+                    T::to_string_lossy(&**self)
+                }
+
+                #[inline]
                 fn try_into_string(self) -> Result<String, FromUtf8Error> {
                     T::$into_string(self)
                 }
@@ -70,10 +76,15 @@ mod tests {
 
     use crate::test_utils::{
         assert_as_mut_matches_as_bytes, assert_as_ref_matches_as_bytes,
-        assert_deref_matches_as_bytes, assert_into_bytes_preserves_bytes,
-        assert_into_bytes_reuses_allocation, assert_stable_bytes, assert_to_bytes_preserves_bytes,
-        assert_try_borrow_str_preserves_bytes, assert_try_into_string_preserves_bytes,
-        assert_try_into_string_reuses_allocation, assert_try_to_string_preserves_bytes,
+        assert_borrow_str_unchecked_preserves_bytes, assert_deref_matches_as_bytes,
+        assert_into_bytes_preserves_bytes, assert_into_bytes_reuses_allocation,
+        assert_into_string_lossy_matches_std, assert_into_string_lossy_reuses_valid_allocation,
+        assert_into_string_unchecked_preserves_bytes,
+        assert_into_string_unchecked_reuses_allocation, assert_stable_bytes,
+        assert_to_bytes_preserves_bytes, assert_to_string_lossy_matches_std,
+        assert_to_string_unchecked_preserves_bytes, assert_try_borrow_str_preserves_bytes,
+        assert_try_into_string_preserves_bytes, assert_try_into_string_reuses_allocation,
+        assert_try_to_string_preserves_bytes,
     };
     use crate::StringBytes;
 
@@ -519,6 +530,338 @@ mod tests {
     }
 
     #[test]
+    fn shared_reference_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let source = input.to_vec();
+            let storage = source.as_slice();
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage);
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+
+        for input in INPUTS {
+            let source = input.to_vec();
+            let storage = &source;
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage);
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            let source = String::from(input);
+            let storage = source.as_str();
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage);
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            let source = String::from(input);
+            let storage = &source;
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage);
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+
+        for input in INPUTS {
+            let source = input.to_vec();
+            let storage: &dyn StringBytes = &source;
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage);
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+    }
+
+    #[test]
+    fn mutable_reference_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let mut source = input.to_vec();
+            let storage = source.as_mut_slice();
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(&mut *storage);
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+
+        for input in INPUTS {
+            let mut source = input.to_vec();
+            let storage = &mut source;
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(&mut *storage);
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            let mut source = String::from(input);
+            let storage = source.as_mut_str();
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(&mut *storage);
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            let mut source = String::from(input);
+            let storage = &mut source;
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(&mut *storage);
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+
+        for input in INPUTS {
+            let mut source = input.to_vec();
+            let storage: &mut dyn StringBytes = &mut source;
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(&mut *storage);
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+    }
+
+    #[test]
+    fn box_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let storage = Box::new(input.to_vec());
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+
+        for input in INPUTS {
+            let storage = Box::<[u8]>::from(input);
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            let storage = Box::<str>::from(input);
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            let storage = Box::new(String::from(input));
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+    }
+
+    #[test]
+    fn box_dyn_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let storage: Box<dyn StringBytes> = Box::new(input.to_vec());
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+            }
+            if std::str::from_utf8(input).is_ok() {
+                assert_into_string_unchecked_preserves_bytes(storage);
+            }
+            let storage: Box<dyn StringBytes> = Box::new(input.to_vec());
+            assert_into_string_lossy_matches_std(storage);
+        }
+    }
+
+    #[test]
+    fn rc_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let storage = Rc::new(input.to_vec());
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+
+        for input in INPUTS {
+            let storage = Rc::<[u8]>::from(input);
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            let storage = Rc::<str>::from(input);
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            let storage = Rc::new(String::from(input));
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+    }
+
+    #[test]
+    fn rc_dyn_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let storage: Rc<dyn StringBytes> = Rc::new(input.to_vec());
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+            }
+            if std::str::from_utf8(input).is_ok() {
+                assert_into_string_unchecked_preserves_bytes(storage);
+            }
+            let storage: Rc<dyn StringBytes> = Rc::new(input.to_vec());
+            assert_into_string_lossy_matches_std(storage);
+        }
+    }
+
+    #[test]
+    fn arc_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let storage = Arc::new(input.to_vec());
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+
+        for input in INPUTS {
+            let storage = Arc::<[u8]>::from(input);
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            let storage = Arc::<str>::from(input);
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            let storage = Arc::new(String::from(input));
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+    }
+
+    #[test]
+    fn arc_dyn_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let storage: Arc<dyn StringBytes + Send + Sync> = Arc::new(input.to_vec());
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+            }
+            if std::str::from_utf8(input).is_ok() {
+                assert_into_string_unchecked_preserves_bytes(storage);
+            }
+            let storage: Arc<dyn StringBytes + Send + Sync> = Arc::new(input.to_vec());
+            assert_into_string_lossy_matches_std(storage);
+        }
+    }
+
+    #[test]
+    fn nested_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let storage = Rc::new(Arc::new(Box::new(input.to_vec())));
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+    }
+
+    #[test]
     fn into_bytes_copies_borrowed_and_shared_storage() {
         fn check<T: StringBytes>(storage: T, expected: &[u8]) {
             let address = storage.as_bytes().as_ptr();
@@ -803,6 +1146,54 @@ mod tests {
     }
 
     #[test]
+    fn lossy_methods_forward_text_overrides() {
+        use std::borrow::Cow;
+
+        struct TextView;
+
+        impl crate::sealed::Sealed for TextView {}
+
+        impl StringBytes for TextView {
+            fn as_bytes(&self) -> &[u8] {
+                panic!("lossy forwarding must preserve the text override")
+            }
+
+            fn to_bytes(&self) -> Vec<u8> {
+                "étext".as_bytes().to_vec()
+            }
+
+            fn to_string_lossy(&self) -> Cow<'_, str> {
+                Cow::Borrowed("étext")
+            }
+        }
+
+        let mut source = TextView;
+        assert_eq!(
+            <&TextView as StringBytes>::to_string_lossy(&&source),
+            "étext"
+        );
+        assert_eq!((&source).into_string_lossy(), "étext");
+        assert_eq!((&mut source).into_string_lossy(), "étext");
+
+        let boxed: Box<dyn StringBytes> = Box::new(TextView);
+        assert_eq!(boxed.to_string_lossy(), "étext");
+        assert_eq!(boxed.into_string_lossy(), "étext");
+        let rc: Rc<dyn StringBytes> = Rc::new(TextView);
+        assert_eq!(rc.to_string_lossy(), "étext");
+        assert_eq!(Rc::clone(&rc).into_string_lossy(), "étext");
+        assert_eq!(rc.into_string_lossy(), "étext");
+        let arc: Arc<dyn StringBytes + Send + Sync> = Arc::new(TextView);
+        assert_eq!(arc.to_string_lossy(), "étext");
+        assert_eq!(Arc::clone(&arc).into_string_lossy(), "étext");
+        assert_eq!(arc.into_string_lossy(), "étext");
+
+        let nested = Rc::new(Arc::new(Box::new(TextView)));
+        assert_eq!(nested.to_string_lossy(), "étext");
+        assert_eq!(Rc::clone(&nested).into_string_lossy(), "étext");
+        assert_eq!(nested.into_string_lossy(), "étext");
+    }
+
+    #[test]
     fn try_into_string_shared_errors_hold_a_copy() {
         fn check<T: StringBytes + Clone>(storage: T, expected: &[u8]) {
             let address = storage.as_bytes().as_ptr();
@@ -1033,6 +1424,316 @@ mod tests {
 
         check_owners(|| (Box::new(*b"text"), 4), b"text");
         check_owners(|| (Box::new([b'a', 0xff]), 2), b"a\xff");
+        check_owners(|| (Box::new([0_u8; 0]), 0), b"");
+    }
+
+    #[test]
+    fn into_string_lossy_skips_byte_conversions_for_invalid_contents() {
+        struct InvalidBytes;
+
+        impl crate::sealed::Sealed for InvalidBytes {}
+
+        impl StringBytes for InvalidBytes {
+            fn as_bytes(&self) -> &[u8] {
+                b"a\xffb"
+            }
+
+            fn to_bytes(&self) -> Vec<u8> {
+                panic!("lossy pointer conversions must not copy into an intermediate Vec")
+            }
+        }
+
+        let mut source = InvalidBytes;
+        assert_eq!((&source).into_string_lossy(), "a�b");
+        assert_eq!((&mut source).into_string_lossy(), "a�b");
+
+        let boxed: Box<dyn StringBytes> = Box::new(InvalidBytes);
+        assert_eq!(boxed.into_string_lossy(), "a�b");
+        let rc: Rc<dyn StringBytes> = Rc::new(InvalidBytes);
+        assert_eq!(Rc::clone(&rc).into_string_lossy(), "a�b");
+        assert_eq!(rc.into_string_lossy(), "a�b");
+        let arc: Arc<dyn StringBytes + Send + Sync> = Arc::new(InvalidBytes);
+        assert_eq!(Arc::clone(&arc).into_string_lossy(), "a�b");
+        assert_eq!(arc.into_string_lossy(), "a�b");
+
+        let nested = Rc::new(Arc::new(Box::new(InvalidBytes)));
+        assert_eq!(Rc::clone(&nested).into_string_lossy(), "a�b");
+        assert_eq!(nested.into_string_lossy(), "a�b");
+    }
+
+    #[test]
+    fn into_string_lossy_reuses_valid_allocations_through_wrappers() {
+        fn check_owners<T: StringBytes + Send + Sync + 'static>(
+            make: impl Fn() -> (T, usize),
+            expected: &[u8],
+        ) {
+            // Each wrapper receives fresh, uniquely owned storage.
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            assert_into_string_lossy_reuses_valid_allocation(
+                Box::new(storage),
+                expected,
+                address,
+                capacity,
+            );
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let boxed: Box<dyn StringBytes> = Box::new(storage);
+            assert_into_string_lossy_reuses_valid_allocation(boxed, expected, address, capacity);
+
+            // Weak references must not force a copy, even after type erasure.
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let rc = Rc::new(storage);
+            let weak = Rc::downgrade(&rc);
+            assert_into_string_lossy_reuses_valid_allocation(rc, expected, address, capacity);
+            assert!(weak.upgrade().is_none());
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let rc: Rc<dyn StringBytes> = Rc::new(storage);
+            let weak = Rc::downgrade(&rc);
+            assert_into_string_lossy_reuses_valid_allocation(rc, expected, address, capacity);
+            assert!(weak.upgrade().is_none());
+
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let arc = Arc::new(storage);
+            let weak = Arc::downgrade(&arc);
+            assert_into_string_lossy_reuses_valid_allocation(arc, expected, address, capacity);
+            assert!(weak.upgrade().is_none());
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let arc: Arc<dyn StringBytes + Send + Sync> = Arc::new(storage);
+            let weak = Arc::downgrade(&arc);
+            assert_into_string_lossy_reuses_valid_allocation(arc, expected, address, capacity);
+            assert!(weak.upgrade().is_none());
+
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let nested: Box<dyn StringBytes> = Box::new(Rc::new(Arc::new(Box::new(storage))));
+            assert_into_string_lossy_reuses_valid_allocation(nested, expected, address, capacity);
+        }
+
+        for input in [b"".as_slice(), b"text", "é说明".as_bytes(), b"ok\xff"] {
+            let make_vec = || {
+                let mut bytes = Vec::with_capacity(input.len() + 32);
+                bytes.extend_from_slice(input);
+                let capacity = bytes.capacity();
+                (bytes, capacity)
+            };
+            check_owners(make_vec, input);
+            check_owners(|| (Box::<[u8]>::from(input), input.len()), input);
+            check_owners(
+                || {
+                    let (bytes, capacity) = make_vec();
+                    (Cow::<'static, [u8]>::Owned(bytes), capacity)
+                },
+                input,
+            );
+            check_owners(
+                || {
+                    let (bytes, capacity) = make_vec();
+                    (Cow::<'static, Vec<u8>>::Owned(bytes), capacity)
+                },
+                input,
+            );
+
+            if let Ok(text) = std::str::from_utf8(input) {
+                let make_string = || {
+                    let mut value = String::with_capacity(text.len() + 32);
+                    value.push_str(text);
+                    let capacity = value.capacity();
+                    (value, capacity)
+                };
+                check_owners(make_string, input);
+                check_owners(|| (Box::<str>::from(text), text.len()), input);
+                check_owners(
+                    || {
+                        let (text, capacity) = make_string();
+                        (Cow::<'static, str>::Owned(text), capacity)
+                    },
+                    input,
+                );
+                check_owners(
+                    || {
+                        let (text, capacity) = make_string();
+                        (Cow::<'static, String>::Owned(text), capacity)
+                    },
+                    input,
+                );
+            }
+
+            #[cfg(feature = "bytes")]
+            {
+                check_owners(
+                    || {
+                        let (bytes, capacity) = make_vec();
+                        (Bytes::from(bytes), capacity)
+                    },
+                    input,
+                );
+                check_owners(
+                    || (Bytes::from(Box::<[u8]>::from(input)), input.len()),
+                    input,
+                );
+                let make_mut = || {
+                    let mut bytes = BytesMut::with_capacity(input.len() + 32);
+                    bytes.extend_from_slice(input);
+                    let capacity = bytes.capacity();
+                    (bytes, capacity)
+                };
+                check_owners(make_mut, input);
+                check_owners(
+                    || {
+                        let (bytes, capacity) = make_mut();
+                        (bytes.freeze(), capacity)
+                    },
+                    input,
+                );
+            }
+        }
+
+        check_owners(|| (Box::new(*b"text"), 4), b"text");
+        check_owners(|| (Box::new([b'a', 0xff]), 2), b"a\xff");
+        check_owners(|| (Box::new([0_u8; 0]), 0), b"");
+    }
+
+    #[test]
+    fn into_string_unchecked_reuses_allocations_through_wrappers() {
+        fn check_owners<T: StringBytes + Send + Sync + 'static>(
+            make: impl Fn() -> (T, usize),
+            expected: &[u8],
+        ) {
+            // Each wrapper receives fresh, uniquely owned storage.
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            assert_into_string_unchecked_reuses_allocation(
+                Box::new(storage),
+                expected,
+                address,
+                capacity,
+            );
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let boxed: Box<dyn StringBytes> = Box::new(storage);
+            assert_into_string_unchecked_reuses_allocation(boxed, expected, address, capacity);
+
+            // Weak references must not force a copy, even after type erasure.
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let rc = Rc::new(storage);
+            let weak = Rc::downgrade(&rc);
+            assert_into_string_unchecked_reuses_allocation(rc, expected, address, capacity);
+            assert!(weak.upgrade().is_none());
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let rc: Rc<dyn StringBytes> = Rc::new(storage);
+            let weak = Rc::downgrade(&rc);
+            assert_into_string_unchecked_reuses_allocation(rc, expected, address, capacity);
+            assert!(weak.upgrade().is_none());
+
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let arc = Arc::new(storage);
+            let weak = Arc::downgrade(&arc);
+            assert_into_string_unchecked_reuses_allocation(arc, expected, address, capacity);
+            assert!(weak.upgrade().is_none());
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let arc: Arc<dyn StringBytes + Send + Sync> = Arc::new(storage);
+            let weak = Arc::downgrade(&arc);
+            assert_into_string_unchecked_reuses_allocation(arc, expected, address, capacity);
+            assert!(weak.upgrade().is_none());
+
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let nested: Box<dyn StringBytes> = Box::new(Rc::new(Arc::new(Box::new(storage))));
+            assert_into_string_unchecked_reuses_allocation(nested, expected, address, capacity);
+        }
+
+        for input in [b"".as_slice(), b"text", "é说明".as_bytes(), b"ok\xff"]
+            .into_iter()
+            .filter(|input| std::str::from_utf8(input).is_ok())
+        {
+            let make_vec = || {
+                let mut bytes = Vec::with_capacity(input.len() + 32);
+                bytes.extend_from_slice(input);
+                let capacity = bytes.capacity();
+                (bytes, capacity)
+            };
+            check_owners(make_vec, input);
+            check_owners(|| (Box::<[u8]>::from(input), input.len()), input);
+            check_owners(
+                || {
+                    let (bytes, capacity) = make_vec();
+                    (Cow::<'static, [u8]>::Owned(bytes), capacity)
+                },
+                input,
+            );
+            check_owners(
+                || {
+                    let (bytes, capacity) = make_vec();
+                    (Cow::<'static, Vec<u8>>::Owned(bytes), capacity)
+                },
+                input,
+            );
+
+            if let Ok(text) = std::str::from_utf8(input) {
+                let make_string = || {
+                    let mut value = String::with_capacity(text.len() + 32);
+                    value.push_str(text);
+                    let capacity = value.capacity();
+                    (value, capacity)
+                };
+                check_owners(make_string, input);
+                check_owners(|| (Box::<str>::from(text), text.len()), input);
+                check_owners(
+                    || {
+                        let (text, capacity) = make_string();
+                        (Cow::<'static, str>::Owned(text), capacity)
+                    },
+                    input,
+                );
+                check_owners(
+                    || {
+                        let (text, capacity) = make_string();
+                        (Cow::<'static, String>::Owned(text), capacity)
+                    },
+                    input,
+                );
+            }
+
+            #[cfg(feature = "bytes")]
+            {
+                check_owners(
+                    || {
+                        let (bytes, capacity) = make_vec();
+                        (Bytes::from(bytes), capacity)
+                    },
+                    input,
+                );
+                check_owners(
+                    || (Bytes::from(Box::<[u8]>::from(input)), input.len()),
+                    input,
+                );
+                let make_mut = || {
+                    let mut bytes = BytesMut::with_capacity(input.len() + 32);
+                    bytes.extend_from_slice(input);
+                    let capacity = bytes.capacity();
+                    (bytes, capacity)
+                };
+                check_owners(make_mut, input);
+                check_owners(
+                    || {
+                        let (bytes, capacity) = make_mut();
+                        (bytes.freeze(), capacity)
+                    },
+                    input,
+                );
+            }
+        }
+
+        check_owners(|| (Box::new(*b"text"), 4), b"text");
         check_owners(|| (Box::new([0_u8; 0]), 0), b"");
     }
 

@@ -45,10 +45,15 @@ mod tests {
     use std::sync::Arc;
 
     use crate::test_utils::{
-        assert_deref_matches_as_bytes, assert_into_bytes_preserves_bytes,
-        assert_into_bytes_reuses_allocation, assert_stable_bytes, assert_to_bytes_preserves_bytes,
-        assert_try_borrow_str_preserves_bytes, assert_try_into_string_preserves_bytes,
-        assert_try_into_string_reuses_allocation, assert_try_to_string_preserves_bytes,
+        assert_borrow_str_unchecked_preserves_bytes, assert_deref_matches_as_bytes,
+        assert_into_bytes_preserves_bytes, assert_into_bytes_reuses_allocation,
+        assert_into_string_lossy_matches_std, assert_into_string_lossy_reuses_valid_allocation,
+        assert_into_string_unchecked_preserves_bytes,
+        assert_into_string_unchecked_reuses_allocation, assert_stable_bytes,
+        assert_to_bytes_preserves_bytes, assert_to_string_lossy_matches_std,
+        assert_to_string_unchecked_preserves_bytes, assert_try_borrow_str_preserves_bytes,
+        assert_try_into_string_preserves_bytes, assert_try_into_string_reuses_allocation,
+        assert_try_to_string_preserves_bytes,
     };
     use crate::StringBytes;
 
@@ -184,6 +189,77 @@ mod tests {
     }
 
     #[test]
+    fn c_str_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let storage = CStr::from_bytes_with_nul(input).unwrap();
+            assert_to_string_lossy_matches_std(storage);
+            if std::str::from_utf8(StringBytes::as_bytes(storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(storage);
+                assert_to_string_unchecked_preserves_bytes(storage);
+            }
+        }
+    }
+
+    #[test]
+    fn c_string_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let storage = CString::from_vec_with_nul(input.to_vec()).unwrap();
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+    }
+
+    #[test]
+    fn box_c_str_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let source = CStr::from_bytes_with_nul(input).unwrap();
+            let storage = Box::<CStr>::from(source);
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+    }
+
+    #[test]
+    fn rc_c_str_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let source = CStr::from_bytes_with_nul(input).unwrap();
+            let storage = Rc::<CStr>::from(source);
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+    }
+
+    #[test]
+    fn arc_c_str_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let source = CStr::from_bytes_with_nul(input).unwrap();
+            let storage = Arc::<CStr>::from(source);
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+    }
+
+    #[test]
     fn into_bytes_reuses_the_box_allocation() {
         for input in INPUTS {
             let source = CStr::from_bytes_with_nul(input).unwrap();
@@ -197,23 +273,6 @@ mod tests {
             let address = StringBytes::as_bytes(&storage).as_ptr();
             let storage: Box<dyn StringBytes> = Box::new(storage);
             assert_into_bytes_reuses_allocation(storage, expected, address, input.len());
-        }
-    }
-
-    #[test]
-    fn try_into_string_reuses_the_box_allocation() {
-        for input in INPUTS {
-            let source = CStr::from_bytes_with_nul(input).unwrap();
-            let expected = &input[..input.len() - 1];
-            let storage = Box::<CStr>::from(source);
-            let address = StringBytes::as_bytes(&storage).as_ptr();
-            // On invalid UTF-8, the error retains this allocation too.
-            assert_try_into_string_reuses_allocation(storage, expected, address, input.len());
-
-            let storage = Box::<CStr>::from(source);
-            let address = StringBytes::as_bytes(&storage).as_ptr();
-            let storage: Box<dyn StringBytes> = Box::new(storage);
-            assert_try_into_string_reuses_allocation(storage, expected, address, input.len());
         }
     }
 
@@ -237,38 +296,6 @@ mod tests {
                 let address = StringBytes::as_bytes(&storage).as_ptr();
                 let other = shared.then(|| Arc::clone(&storage));
                 let bytes = assert_into_bytes_preserves_bytes(storage);
-                if !bytes.is_empty() {
-                    assert_ne!(bytes.as_ptr(), address);
-                }
-                if let Some(other) = other {
-                    assert_eq!(other.to_bytes_with_nul(), input);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn try_into_string_copies_rc_and_arc_storage() {
-        for input in INPUTS {
-            let source = CStr::from_bytes_with_nul(input).unwrap();
-            for shared in [false, true] {
-                let storage = Rc::<CStr>::from(source);
-                let address = StringBytes::as_bytes(&storage).as_ptr();
-                let other = shared.then(|| Rc::clone(&storage));
-                let bytes = assert_try_into_string_preserves_bytes(storage)
-                    .map_or_else(FromUtf8Error::into_bytes, String::into_bytes);
-                if !bytes.is_empty() {
-                    assert_ne!(bytes.as_ptr(), address);
-                }
-                if let Some(other) = other {
-                    assert_eq!(other.to_bytes_with_nul(), input);
-                }
-
-                let storage = Arc::<CStr>::from(source);
-                let address = StringBytes::as_bytes(&storage).as_ptr();
-                let other = shared.then(|| Arc::clone(&storage));
-                let bytes = assert_try_into_string_preserves_bytes(storage)
-                    .map_or_else(FromUtf8Error::into_bytes, String::into_bytes);
                 if !bytes.is_empty() {
                     assert_ne!(bytes.as_ptr(), address);
                 }
@@ -349,6 +376,55 @@ mod tests {
     }
 
     #[test]
+    fn try_into_string_reuses_the_box_allocation() {
+        for input in INPUTS {
+            let source = CStr::from_bytes_with_nul(input).unwrap();
+            let expected = &input[..input.len() - 1];
+            let storage = Box::<CStr>::from(source);
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            // On invalid UTF-8, the error retains this allocation too.
+            assert_try_into_string_reuses_allocation(storage, expected, address, input.len());
+
+            let storage = Box::<CStr>::from(source);
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            let storage: Box<dyn StringBytes> = Box::new(storage);
+            assert_try_into_string_reuses_allocation(storage, expected, address, input.len());
+        }
+    }
+
+    #[test]
+    fn try_into_string_copies_rc_and_arc_storage() {
+        for input in INPUTS {
+            let source = CStr::from_bytes_with_nul(input).unwrap();
+            for shared in [false, true] {
+                let storage = Rc::<CStr>::from(source);
+                let address = StringBytes::as_bytes(&storage).as_ptr();
+                let other = shared.then(|| Rc::clone(&storage));
+                let bytes = assert_try_into_string_preserves_bytes(storage)
+                    .map_or_else(FromUtf8Error::into_bytes, String::into_bytes);
+                if !bytes.is_empty() {
+                    assert_ne!(bytes.as_ptr(), address);
+                }
+                if let Some(other) = other {
+                    assert_eq!(other.to_bytes_with_nul(), input);
+                }
+
+                let storage = Arc::<CStr>::from(source);
+                let address = StringBytes::as_bytes(&storage).as_ptr();
+                let other = shared.then(|| Arc::clone(&storage));
+                let bytes = assert_try_into_string_preserves_bytes(storage)
+                    .map_or_else(FromUtf8Error::into_bytes, String::into_bytes);
+                if !bytes.is_empty() {
+                    assert_ne!(bytes.as_ptr(), address);
+                }
+                if let Some(other) = other {
+                    assert_eq!(other.to_bytes_with_nul(), input);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn try_into_string_reuses_c_string_allocations() {
         for input in INPUTS {
             let source = CStr::from_bytes_with_nul(input).unwrap();
@@ -416,6 +492,178 @@ mod tests {
                 assert_ne!(bytes.as_ptr(), address);
             }
             assert_eq!(storage.as_bytes_with_nul(), input);
+        }
+    }
+
+    #[test]
+    fn into_string_lossy_reuses_valid_the_box_allocation() {
+        for input in INPUTS {
+            let source = CStr::from_bytes_with_nul(input).unwrap();
+            let expected = &input[..input.len() - 1];
+            let storage = Box::<CStr>::from(source);
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            // Valid UTF-8 retains the buffer, including the terminator's capacity.
+            assert_into_string_lossy_reuses_valid_allocation(
+                storage,
+                expected,
+                address,
+                input.len(),
+            );
+
+            let storage = Box::<CStr>::from(source);
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            let storage: Box<dyn StringBytes> = Box::new(storage);
+            assert_into_string_lossy_reuses_valid_allocation(
+                storage,
+                expected,
+                address,
+                input.len(),
+            );
+        }
+    }
+
+    #[test]
+    fn into_string_lossy_reuses_valid_c_string_allocations() {
+        for input in INPUTS {
+            let source = CStr::from_bytes_with_nul(input).unwrap();
+            let expected = &input[..input.len() - 1];
+
+            let storage = CString::from(source);
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            assert_into_string_lossy_reuses_valid_allocation(
+                storage,
+                expected,
+                address,
+                input.len(),
+            );
+
+            let storage = Box::new(CString::from(source));
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            assert_into_string_lossy_reuses_valid_allocation(
+                storage,
+                expected,
+                address,
+                input.len(),
+            );
+
+            let storage: Box<dyn StringBytes> = Box::new(CString::from(source));
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            assert_into_string_lossy_reuses_valid_allocation(
+                storage,
+                expected,
+                address,
+                input.len(),
+            );
+
+            let storage = Rc::new(CString::from(source));
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            let weak = Rc::downgrade(&storage);
+            assert_into_string_lossy_reuses_valid_allocation(
+                storage,
+                expected,
+                address,
+                input.len(),
+            );
+            assert!(weak.upgrade().is_none());
+
+            let storage: Rc<dyn StringBytes> = Rc::new(CString::from(source));
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            let weak = Rc::downgrade(&storage);
+            assert_into_string_lossy_reuses_valid_allocation(
+                storage,
+                expected,
+                address,
+                input.len(),
+            );
+            assert!(weak.upgrade().is_none());
+
+            let storage = Arc::new(CString::from(source));
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            let weak = Arc::downgrade(&storage);
+            assert_into_string_lossy_reuses_valid_allocation(
+                storage,
+                expected,
+                address,
+                input.len(),
+            );
+            assert!(weak.upgrade().is_none());
+
+            let storage: Arc<dyn StringBytes + Send + Sync> = Arc::new(CString::from(source));
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            let weak = Arc::downgrade(&storage);
+            assert_into_string_lossy_reuses_valid_allocation(
+                storage,
+                expected,
+                address,
+                input.len(),
+            );
+            assert!(weak.upgrade().is_none());
+        }
+    }
+
+    #[test]
+    fn into_string_unchecked_reuses_the_box_allocation() {
+        for input in INPUTS
+            .into_iter()
+            .filter(|input| std::str::from_utf8(input).is_ok())
+        {
+            let source = CStr::from_bytes_with_nul(input).unwrap();
+            let expected = &input[..input.len() - 1];
+            let storage = Box::<CStr>::from(source);
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            assert_into_string_unchecked_reuses_allocation(storage, expected, address, input.len());
+
+            let storage = Box::<CStr>::from(source);
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            let storage: Box<dyn StringBytes> = Box::new(storage);
+            assert_into_string_unchecked_reuses_allocation(storage, expected, address, input.len());
+        }
+    }
+
+    #[test]
+    fn into_string_unchecked_reuses_c_string_allocations() {
+        for input in INPUTS
+            .into_iter()
+            .filter(|input| std::str::from_utf8(input).is_ok())
+        {
+            let source = CStr::from_bytes_with_nul(input).unwrap();
+            let expected = &input[..input.len() - 1];
+
+            let storage = CString::from(source);
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            assert_into_string_unchecked_reuses_allocation(storage, expected, address, input.len());
+
+            let storage = Box::new(CString::from(source));
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            assert_into_string_unchecked_reuses_allocation(storage, expected, address, input.len());
+
+            let storage: Box<dyn StringBytes> = Box::new(CString::from(source));
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            assert_into_string_unchecked_reuses_allocation(storage, expected, address, input.len());
+
+            let storage = Rc::new(CString::from(source));
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            let weak = Rc::downgrade(&storage);
+            assert_into_string_unchecked_reuses_allocation(storage, expected, address, input.len());
+            assert!(weak.upgrade().is_none());
+
+            let storage: Rc<dyn StringBytes> = Rc::new(CString::from(source));
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            let weak = Rc::downgrade(&storage);
+            assert_into_string_unchecked_reuses_allocation(storage, expected, address, input.len());
+            assert!(weak.upgrade().is_none());
+
+            let storage = Arc::new(CString::from(source));
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            let weak = Arc::downgrade(&storage);
+            assert_into_string_unchecked_reuses_allocation(storage, expected, address, input.len());
+            assert!(weak.upgrade().is_none());
+
+            let storage: Arc<dyn StringBytes + Send + Sync> = Arc::new(CString::from(source));
+            let address = StringBytes::as_bytes(&storage).as_ptr();
+            let weak = Arc::downgrade(&storage);
+            assert_into_string_unchecked_reuses_allocation(storage, expected, address, input.len());
+            assert!(weak.upgrade().is_none());
         }
     }
 }

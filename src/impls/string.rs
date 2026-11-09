@@ -1,6 +1,8 @@
 // These storage types guarantee UTF-8 and override string conversions to
 // skip validation. Their pointer helpers delegate to these overrides,
 // preserving the same behavior through smart pointers.
+// into_string_lossy uses to_string_lossy's fast path; the unchecked defaults
+// go through byte conversions and never validate UTF-8.
 
 use std::borrow::Cow;
 use std::rc::Rc;
@@ -26,6 +28,11 @@ impl_string_bytes!(str {
     #[inline]
     fn try_to_string(&self) -> Result<String, FromUtf8Error> {
         Ok(self.to_owned())
+    }
+
+    #[inline]
+    fn to_string_lossy(&self) -> Cow<'_, str> {
+        Cow::Borrowed(self)
     }
 
     #[inline]
@@ -77,6 +84,11 @@ impl_string_bytes!(String {
     }
 
     #[inline]
+    fn to_string_lossy(&self) -> Cow<'_, str> {
+        Cow::Borrowed(self.as_str())
+    }
+
+    #[inline]
     fn try_into_string(self) -> Result<String, FromUtf8Error> {
         Ok(self)
     }
@@ -109,6 +121,11 @@ impl_string_bytes!(Cow<'_, str> {
     }
 
     #[inline]
+    fn to_string_lossy(&self) -> Cow<'_, str> {
+        Cow::Borrowed(self.as_ref())
+    }
+
+    #[inline]
     fn try_into_string(self) -> Result<String, FromUtf8Error> {
         Ok(self.into_owned())
     }
@@ -138,6 +155,11 @@ impl_string_bytes!(Cow<'_, String> {
     }
 
     #[inline]
+    fn to_string_lossy(&self) -> Cow<'_, str> {
+        Cow::Borrowed(self.as_ref().as_str())
+    }
+
+    #[inline]
     fn try_into_string(self) -> Result<String, FromUtf8Error> {
         Ok(self.into_owned())
     }
@@ -152,11 +174,16 @@ mod tests {
     use std::sync::Arc;
 
     use crate::test_utils::{
-        assert_as_ref_matches_as_bytes, assert_deref_matches_as_bytes,
-        assert_into_bytes_preserves_bytes, assert_into_bytes_reuses_allocation,
-        assert_stable_bytes, assert_to_bytes_preserves_bytes,
-        assert_try_borrow_str_preserves_bytes, assert_try_into_string_preserves_bytes,
-        assert_try_into_string_reuses_allocation, assert_try_to_string_preserves_bytes,
+        assert_as_ref_matches_as_bytes, assert_borrow_str_unchecked_preserves_bytes,
+        assert_deref_matches_as_bytes, assert_into_bytes_preserves_bytes,
+        assert_into_bytes_reuses_allocation, assert_into_string_lossy_matches_std,
+        assert_into_string_lossy_reuses_valid_allocation,
+        assert_into_string_unchecked_preserves_bytes,
+        assert_into_string_unchecked_reuses_allocation, assert_stable_bytes,
+        assert_to_bytes_preserves_bytes, assert_to_string_lossy_matches_std,
+        assert_to_string_unchecked_preserves_bytes, assert_try_borrow_str_preserves_bytes,
+        assert_try_into_string_preserves_bytes, assert_try_into_string_reuses_allocation,
+        assert_try_to_string_preserves_bytes,
     };
     use crate::StringBytes;
 
@@ -225,6 +252,65 @@ mod tests {
                 let _ = assert_try_to_string_preserves_bytes(&storage);
                 assert_into_bytes_preserves_bytes(storage.clone());
                 let _ = assert_try_into_string_preserves_bytes(storage);
+            }
+        }
+    }
+
+    #[test]
+    fn str_unchecked_and_lossy_methods() {
+        for storage in INPUTS {
+            assert_to_string_lossy_matches_std(storage);
+            if std::str::from_utf8(StringBytes::as_bytes(storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(storage);
+                assert_to_string_unchecked_preserves_bytes(storage);
+            }
+        }
+    }
+
+    #[test]
+    fn string_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let storage = owned(input);
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+    }
+
+    #[test]
+    fn cow_str_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            for storage in [Cow::Borrowed(input), Cow::<'_, str>::Owned(owned(input))] {
+                assert_to_string_lossy_matches_std(&storage);
+                if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                    assert_borrow_str_unchecked_preserves_bytes(&storage);
+                    assert_to_string_unchecked_preserves_bytes(&storage);
+                    assert_into_string_unchecked_preserves_bytes(storage.clone());
+                }
+                assert_into_string_lossy_matches_std(storage);
+            }
+        }
+    }
+
+    #[test]
+    fn cow_string_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let source = owned(input);
+            for storage in [
+                Cow::Borrowed(&source),
+                Cow::<'_, String>::Owned(owned(input)),
+            ] {
+                assert_to_string_lossy_matches_std(&storage);
+                if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                    assert_borrow_str_unchecked_preserves_bytes(&storage);
+                    assert_to_string_unchecked_preserves_bytes(&storage);
+                    assert_into_string_unchecked_preserves_bytes(storage.clone());
+                }
+                assert_into_string_lossy_matches_std(storage);
             }
         }
     }
@@ -322,6 +408,76 @@ mod tests {
             let text = owned(input);
             check(Cow::Borrowed(&text), &text);
             assert_eq!(text, input);
+        }
+    }
+
+    #[test]
+    fn into_string_lossy_reuses_owned_storage() {
+        for input in INPUTS {
+            let text = owned(input);
+            let address = text.as_ptr();
+            let capacity = text.capacity();
+            assert_into_string_lossy_reuses_valid_allocation(
+                text,
+                input.as_bytes(),
+                address,
+                capacity,
+            );
+
+            let text = owned(input);
+            let address = text.as_ptr();
+            let capacity = text.capacity();
+            assert_into_string_lossy_reuses_valid_allocation(
+                Cow::<'_, str>::Owned(text),
+                input.as_bytes(),
+                address,
+                capacity,
+            );
+
+            let text = owned(input);
+            let address = text.as_ptr();
+            let capacity = text.capacity();
+            assert_into_string_lossy_reuses_valid_allocation(
+                Cow::<'_, String>::Owned(text),
+                input.as_bytes(),
+                address,
+                capacity,
+            );
+        }
+    }
+
+    #[test]
+    fn into_string_unchecked_reuses_owned_storage() {
+        for input in INPUTS {
+            let text = owned(input);
+            let address = text.as_ptr();
+            let capacity = text.capacity();
+            assert_into_string_unchecked_reuses_allocation(
+                text,
+                input.as_bytes(),
+                address,
+                capacity,
+            );
+
+            let text = owned(input);
+            let address = text.as_ptr();
+            let capacity = text.capacity();
+            assert_into_string_unchecked_reuses_allocation(
+                Cow::<'_, str>::Owned(text),
+                input.as_bytes(),
+                address,
+                capacity,
+            );
+
+            let text = owned(input);
+            let address = text.as_ptr();
+            let capacity = text.capacity();
+            assert_into_string_unchecked_reuses_allocation(
+                Cow::<'_, String>::Owned(text),
+                input.as_bytes(),
+                address,
+                capacity,
+            );
         }
     }
 

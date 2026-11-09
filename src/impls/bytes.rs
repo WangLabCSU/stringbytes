@@ -143,10 +143,15 @@ mod tests {
 
     use crate::test_utils::{
         assert_as_mut_matches_as_bytes, assert_as_ref_matches_as_bytes,
-        assert_deref_matches_as_bytes, assert_into_bytes_preserves_bytes,
-        assert_into_bytes_reuses_allocation, assert_stable_bytes, assert_to_bytes_preserves_bytes,
-        assert_try_borrow_str_preserves_bytes, assert_try_into_string_preserves_bytes,
-        assert_try_into_string_reuses_allocation, assert_try_to_string_preserves_bytes,
+        assert_borrow_str_unchecked_preserves_bytes, assert_deref_matches_as_bytes,
+        assert_into_bytes_preserves_bytes, assert_into_bytes_reuses_allocation,
+        assert_into_string_lossy_matches_std, assert_into_string_lossy_reuses_valid_allocation,
+        assert_into_string_unchecked_preserves_bytes,
+        assert_into_string_unchecked_reuses_allocation, assert_stable_bytes,
+        assert_to_bytes_preserves_bytes, assert_to_string_lossy_matches_std,
+        assert_to_string_unchecked_preserves_bytes, assert_try_borrow_str_preserves_bytes,
+        assert_try_into_string_preserves_bytes, assert_try_into_string_reuses_allocation,
+        assert_try_to_string_preserves_bytes,
     };
     use crate::StringBytes;
 
@@ -412,6 +417,154 @@ mod tests {
             }
             assert_eq!(&original[..], b"tail");
             assert_deref_matches_as_bytes(&original);
+        }
+    }
+
+    #[test]
+    fn array_unchecked_and_lossy_methods() {
+        for storage in [*b"text", *b"\0e\xcc\x81", *b"ok\xff\0", *b"ok\xe2\x82"] {
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage);
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+
+        let storage = [0_u8; 0];
+        assert_to_string_lossy_matches_std(&storage);
+        if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+            assert_borrow_str_unchecked_preserves_bytes(&storage);
+            assert_to_string_unchecked_preserves_bytes(&storage);
+            assert_into_string_unchecked_preserves_bytes(storage);
+        }
+        assert_into_string_lossy_matches_std(storage);
+    }
+
+    #[test]
+    fn slice_unchecked_and_lossy_methods() {
+        for storage in INPUTS {
+            assert_to_string_lossy_matches_std(storage);
+            if std::str::from_utf8(StringBytes::as_bytes(storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(storage);
+                assert_to_string_unchecked_preserves_bytes(storage);
+            }
+        }
+    }
+
+    #[test]
+    fn vec_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let storage = input.to_vec();
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+    }
+
+    #[test]
+    fn cow_slice_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            for storage in [Cow::Borrowed(input), Cow::<'_, [u8]>::Owned(input.to_vec())] {
+                assert_to_string_lossy_matches_std(&storage);
+                if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                    assert_borrow_str_unchecked_preserves_bytes(&storage);
+                    assert_to_string_unchecked_preserves_bytes(&storage);
+                    assert_into_string_unchecked_preserves_bytes(storage.clone());
+                }
+                assert_into_string_lossy_matches_std(storage);
+            }
+        }
+    }
+
+    #[test]
+    fn cow_vec_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let vector = input.to_vec();
+            for storage in [
+                Cow::Borrowed(&vector),
+                Cow::<'_, Vec<u8>>::Owned(input.to_vec()),
+            ] {
+                assert_to_string_lossy_matches_std(&storage);
+                if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                    assert_borrow_str_unchecked_preserves_bytes(&storage);
+                    assert_to_string_unchecked_preserves_bytes(&storage);
+                    assert_into_string_unchecked_preserves_bytes(storage.clone());
+                }
+                assert_into_string_lossy_matches_std(storage);
+            }
+        }
+    }
+
+    #[test]
+    fn cow_array_unchecked_and_lossy_methods() {
+        for input in [*b"text", *b"\0e\xcc\x81", *b"ok\xff\0", *b"ok\xe2\x82"] {
+            for storage in [Cow::Borrowed(&input), Cow::<'_, [u8; 4]>::Owned(input)] {
+                assert_to_string_lossy_matches_std(&storage);
+                if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                    assert_borrow_str_unchecked_preserves_bytes(&storage);
+                    assert_to_string_unchecked_preserves_bytes(&storage);
+                    assert_into_string_unchecked_preserves_bytes(storage.clone());
+                }
+                assert_into_string_lossy_matches_std(storage);
+            }
+        }
+
+        for storage in [Cow::Borrowed(&[]), Cow::<'_, [u8; 0]>::Owned([])] {
+            assert_to_string_lossy_matches_std(&storage);
+            if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                assert_borrow_str_unchecked_preserves_bytes(&storage);
+                assert_to_string_unchecked_preserves_bytes(&storage);
+                assert_into_string_unchecked_preserves_bytes(storage.clone());
+            }
+            assert_into_string_lossy_matches_std(storage);
+        }
+    }
+
+    #[cfg(feature = "bytes")]
+    #[test]
+    fn bytes_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let original = Bytes::from([b"prefix".as_slice(), input].concat());
+            for storage in [
+                Bytes::from_static(input),
+                Bytes::from(input.to_vec()),
+                Bytes::from_owner(input.to_vec()),
+                original.slice(6..),
+            ] {
+                assert_to_string_lossy_matches_std(&storage);
+                if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                    assert_borrow_str_unchecked_preserves_bytes(&storage);
+                    assert_to_string_unchecked_preserves_bytes(&storage);
+                    assert_into_string_unchecked_preserves_bytes(storage.clone());
+                }
+                assert_into_string_lossy_matches_std(storage);
+            }
+        }
+    }
+
+    #[cfg(feature = "bytes")]
+    #[test]
+    fn bytes_mut_unchecked_and_lossy_methods() {
+        for input in INPUTS {
+            let mut original = BytesMut::from(input);
+            original.extend_from_slice(b"tail");
+            let prefix = original.split_to(input.len());
+            for storage in [BytesMut::from(input), prefix] {
+                assert_to_string_lossy_matches_std(&storage);
+                if std::str::from_utf8(StringBytes::as_bytes(&storage)).is_ok() {
+                    assert_borrow_str_unchecked_preserves_bytes(&storage);
+                    assert_to_string_unchecked_preserves_bytes(&storage);
+                    assert_into_string_unchecked_preserves_bytes(storage.clone());
+                }
+                assert_into_string_lossy_matches_std(storage);
+            }
+            assert_eq!(&original[..], b"tail");
         }
     }
 
@@ -707,6 +860,230 @@ mod tests {
             let vector = Vec::from(input);
             check_copied_conversion(Cow::Borrowed(&vector), input, false);
             assert_eq!(vector, input);
+        }
+    }
+
+    #[test]
+    fn into_string_lossy_reuses_valid_owned_storage() {
+        for input in [
+            b"".as_slice(),
+            b"text",
+            "é说明".as_bytes(),
+            b"\0e\xcc\x81",
+            b"ok\xff",
+        ] {
+            let make_vec = || {
+                let mut bytes = Vec::with_capacity(input.len() + 32);
+                bytes.extend_from_slice(input);
+                bytes
+            };
+
+            let bytes = make_vec();
+            let address = bytes.as_ptr();
+            let capacity = bytes.capacity();
+            assert_into_string_lossy_reuses_valid_allocation(bytes, input, address, capacity);
+
+            let bytes = make_vec();
+            let address = bytes.as_ptr();
+            let capacity = bytes.capacity();
+            assert_into_string_lossy_reuses_valid_allocation(
+                Cow::<'_, [u8]>::Owned(bytes),
+                input,
+                address,
+                capacity,
+            );
+
+            let bytes = make_vec();
+            let address = bytes.as_ptr();
+            let capacity = bytes.capacity();
+            assert_into_string_lossy_reuses_valid_allocation(
+                Cow::<'_, Vec<u8>>::Owned(bytes),
+                input,
+                address,
+                capacity,
+            );
+
+            #[cfg(feature = "bytes")]
+            {
+                let bytes = make_vec();
+                let address = bytes.as_ptr();
+                let capacity = bytes.capacity();
+                assert_into_string_lossy_reuses_valid_allocation(
+                    Bytes::from(bytes),
+                    input,
+                    address,
+                    capacity,
+                );
+
+                let bytes = Box::<[u8]>::from(input);
+                let address = bytes.as_ptr();
+                assert_into_string_lossy_reuses_valid_allocation(
+                    Bytes::from(bytes),
+                    input,
+                    address,
+                    input.len(),
+                );
+
+                let mut bytes = BytesMut::with_capacity(input.len() + 32);
+                bytes.extend_from_slice(input);
+                let address = bytes.as_ptr();
+                let capacity = bytes.capacity();
+                assert_into_string_lossy_reuses_valid_allocation(bytes, input, address, capacity);
+
+                let mut bytes = BytesMut::with_capacity(input.len() + 32);
+                bytes.extend_from_slice(input);
+                let address = bytes.as_ptr();
+                let capacity = bytes.capacity();
+                assert_into_string_lossy_reuses_valid_allocation(
+                    bytes.freeze(),
+                    input,
+                    address,
+                    capacity,
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "bytes")]
+    #[test]
+    fn into_string_lossy_reuses_valid_sliced_allocations() {
+        for input in [b"text".as_slice(), b"ok\xff"] {
+            // A slice's address differs from the allocation's original address.
+            let mut original = Vec::with_capacity(64);
+            original.extend_from_slice(b"prefix");
+            original.extend_from_slice(input);
+            let address = original.as_ptr();
+            let capacity = original.capacity();
+            let original = Bytes::from(original);
+            let slice = original.slice(6..);
+            assert_ne!(slice.as_ptr(), address);
+            drop(original);
+            assert_into_string_lossy_reuses_valid_allocation(slice, input, address, capacity);
+
+            let mut original = BytesMut::with_capacity(64);
+            original.extend_from_slice(b"prefix");
+            original.extend_from_slice(input);
+            let address = original.as_ptr();
+            let capacity = original.capacity();
+            let prefix = original.split_to(6);
+            assert_ne!(original.as_ptr(), address);
+            drop(prefix);
+            assert_into_string_lossy_reuses_valid_allocation(original, input, address, capacity);
+        }
+    }
+
+    #[test]
+    fn into_string_unchecked_reuses_owned_storage() {
+        for input in [
+            b"".as_slice(),
+            b"text",
+            "é说明".as_bytes(),
+            b"\0e\xcc\x81",
+            b"ok\xff",
+        ]
+        .into_iter()
+        .filter(|input| std::str::from_utf8(input).is_ok())
+        {
+            let make_vec = || {
+                let mut bytes = Vec::with_capacity(input.len() + 32);
+                bytes.extend_from_slice(input);
+                bytes
+            };
+
+            let bytes = make_vec();
+            let address = bytes.as_ptr();
+            let capacity = bytes.capacity();
+            assert_into_string_unchecked_reuses_allocation(bytes, input, address, capacity);
+
+            let bytes = make_vec();
+            let address = bytes.as_ptr();
+            let capacity = bytes.capacity();
+            assert_into_string_unchecked_reuses_allocation(
+                Cow::<'_, [u8]>::Owned(bytes),
+                input,
+                address,
+                capacity,
+            );
+
+            let bytes = make_vec();
+            let address = bytes.as_ptr();
+            let capacity = bytes.capacity();
+            assert_into_string_unchecked_reuses_allocation(
+                Cow::<'_, Vec<u8>>::Owned(bytes),
+                input,
+                address,
+                capacity,
+            );
+
+            #[cfg(feature = "bytes")]
+            {
+                let bytes = make_vec();
+                let address = bytes.as_ptr();
+                let capacity = bytes.capacity();
+                assert_into_string_unchecked_reuses_allocation(
+                    Bytes::from(bytes),
+                    input,
+                    address,
+                    capacity,
+                );
+
+                let bytes = Box::<[u8]>::from(input);
+                let address = bytes.as_ptr();
+                assert_into_string_unchecked_reuses_allocation(
+                    Bytes::from(bytes),
+                    input,
+                    address,
+                    input.len(),
+                );
+
+                let mut bytes = BytesMut::with_capacity(input.len() + 32);
+                bytes.extend_from_slice(input);
+                let address = bytes.as_ptr();
+                let capacity = bytes.capacity();
+                assert_into_string_unchecked_reuses_allocation(bytes, input, address, capacity);
+
+                let mut bytes = BytesMut::with_capacity(input.len() + 32);
+                bytes.extend_from_slice(input);
+                let address = bytes.as_ptr();
+                let capacity = bytes.capacity();
+                assert_into_string_unchecked_reuses_allocation(
+                    bytes.freeze(),
+                    input,
+                    address,
+                    capacity,
+                );
+            }
+        }
+    }
+
+    #[cfg(feature = "bytes")]
+    #[test]
+    fn into_string_unchecked_reuses_sliced_allocations() {
+        for input in [b"text".as_slice(), b"ok\xff"]
+            .into_iter()
+            .filter(|input| std::str::from_utf8(input).is_ok())
+        {
+            // A slice's address differs from the allocation's original address.
+            let mut original = Vec::with_capacity(64);
+            original.extend_from_slice(b"prefix");
+            original.extend_from_slice(input);
+            let address = original.as_ptr();
+            let capacity = original.capacity();
+            let original = Bytes::from(original);
+            let slice = original.slice(6..);
+            assert_ne!(slice.as_ptr(), address);
+            drop(original);
+            assert_into_string_unchecked_reuses_allocation(slice, input, address, capacity);
+
+            let mut original = BytesMut::with_capacity(64);
+            original.extend_from_slice(b"prefix");
+            original.extend_from_slice(input);
+            let address = original.as_ptr();
+            let capacity = original.capacity();
+            let prefix = original.split_to(6);
+            assert_ne!(original.as_ptr(), address);
+            drop(prefix);
+            assert_into_string_unchecked_reuses_allocation(original, input, address, capacity);
         }
     }
 

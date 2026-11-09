@@ -1,6 +1,6 @@
 [package]
 name = "stringbytes"
-version = "0.0.2"
+version = "0.0.3"
 description = "A trait for byte sequences and UTF-8 strings"
 authors = ["Yun Peng <pengyun.me@outlook.com>"]
 edition = "2021"

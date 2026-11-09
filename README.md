@@ -16,22 +16,39 @@ generic string and byte-buffer types.
 
 Both borrowed and owned storage are supported, including shared buffers.
 
-Implementations expose a consistent byte sequence and preserve it when
-borrowing as [`&str`](https://doc.rust-lang.org/stable/std/primitive.str.html) or converting into [`Vec<u8>`](https://doc.rust-lang.org/stable/alloc/vec/struct.Vec.html) or [`String`](https://doc.rust-lang.org/stable/alloc/string/struct.String.html).
+Implementations expose a consistent byte sequence. Byte conversions and
+successful checked string conversions preserve that sequence.
 The bytes need not be valid UTF-8; validation is performed when needed to
 borrow them as [`&str`](https://doc.rust-lang.org/stable/std/primitive.str.html) or convert them into a [`String`](https://doc.rust-lang.org/stable/alloc/string/struct.String.html).
+Unchecked conversions let callers uphold UTF-8 validity themselves.
+Lossy conversions follow the same behavior as [`String::from_utf8_lossy`](https://doc.rust-lang.org/stable/alloc/string/struct.String.html#method.from_utf8_lossy).
 
 ## Examples
 
 ### `&[u8]`
 
 ```rust
+use std::borrow::Cow;
 use stringbytes::StringBytes;
 
 let bytes: &[u8] = b"hello";
+assert_eq!(bytes.as_bytes(), b"hello");
 
 // Validate UTF-8 and borrow a string slice without copying.
 assert_eq!(bytes.try_borrow_str()?, "hello");
+
+// SAFETY: the bytes come from a UTF-8 string literal.
+let text = unsafe { bytes.borrow_str_unchecked() };
+assert_eq!(text, "hello");
+
+// Lossy conversion borrows valid UTF-8 and replaces invalid UTF-8 as needed.
+assert!(matches!(bytes.to_string_lossy(), Cow::Borrowed("hello")));
+let invalid: &[u8] = b"he\xfflo";
+assert_eq!(invalid.to_string_lossy(), "he�lo");
+
+// SAFETY: bytes still contains the UTF-8 literal above; copy without validation.
+let string = unsafe { bytes.to_string_unchecked() };
+assert_eq!(string, "hello");
 ```
 
 ### `Vec<u8>`
@@ -48,9 +65,14 @@ assert_eq!(string, "hello");
 assert_eq!(string.as_ptr(), address);
 
 // Convert back to bytes, keeping the same allocation.
-let bytes = string.into_bytes();
+let bytes = StringBytes::into_bytes(string);
 assert_eq!(bytes, b"hello");
 assert_eq!(bytes.as_ptr(), address);
+
+// SAFETY: these bytes came from a String and have not been modified.
+let string = unsafe { bytes.into_string_unchecked() };
+assert_eq!(string, "hello");
+assert_eq!(string.as_ptr(), address);
 ```
 
 ### `Box<[u8]>`
@@ -130,6 +152,10 @@ let address = text.as_bytes().as_ptr();
 let string = text.try_into_string()?;
 assert_eq!(string, "hello");
 assert_eq!(string.as_ptr(), address);
+
+// C strings may also contain invalid UTF-8.
+let text = CString::from(c"he\xfflo");
+assert_eq!(text.into_string_lossy(), "he�lo");
 ```
 
 <!-- cargo-rdme end -->
