@@ -95,6 +95,38 @@
 //! assert_eq!(string.capacity(), capacity);
 //! # Ok::<(), std::string::FromUtf8Error>(())
 //! ```
+//!
+//! ## `&CStr`
+//!
+//! ```rust
+//! use stringbytes::StringBytes;
+//!
+//! let text = c"hello";
+//!
+//! // C strings expose their contents without the trailing NUL.
+//! assert_eq!(text.try_borrow_str()?, "hello");
+//!
+//! // CStr::to_bytes borrows a slice; the trait method copies into a vector.
+//! let bytes: Vec<u8> = StringBytes::to_bytes(text);
+//! assert_eq!(bytes, b"hello");
+//! # Ok::<(), std::str::Utf8Error>(())
+//! ```
+//!
+//! ## `CString`
+//!
+//! ```rust
+//! use std::ffi::CString;
+//! use stringbytes::StringBytes;
+//!
+//! let text = CString::from(c"hello");
+//! let address = text.as_bytes().as_ptr();
+//!
+//! // Validate UTF-8 and transfer the buffer, excluding the trailing NUL.
+//! let string = text.try_into_string()?;
+//! assert_eq!(string, "hello");
+//! assert_eq!(string.as_ptr(), address);
+//! # Ok::<(), std::string::FromUtf8Error>(())
+//! ```
 
 use std::rc::Rc;
 use std::str::{self, Utf8Error};
@@ -159,6 +191,8 @@ pub trait StringBytes: sealed::Sealed {
     ///
     /// This method does not allocate, copy, or validate UTF-8. The returned
     /// slice may contain any byte sequence.
+    /// For [`CStr`](std::ffi::CStr) and [`CString`](std::ffi::CString), it
+    /// excludes the trailing NUL byte.
     ///
     /// # Examples
     ///
@@ -174,6 +208,10 @@ pub trait StringBytes: sealed::Sealed {
     ///
     /// This method does not validate UTF-8. The returned vector owns a copy of
     /// the bytes, even when `self` owns its storage.
+    ///
+    /// For [`CStr`](std::ffi::CStr), use `StringBytes::to_bytes(value)` to
+    /// distinguish this method from [`CStr::to_bytes`](std::ffi::CStr::to_bytes),
+    /// which returns a borrowed slice.
     ///
     /// # Examples
     ///
@@ -312,7 +350,8 @@ pub trait StringBytes: sealed::Sealed {
 
     /// Converts the contents of a [`Box`] into a [`Vec<u8>`].
     ///
-    /// Boxed byte slices, byte arrays, and strings reuse their allocation.
+    /// Boxed byte slices, byte arrays, [`str`](prim@str), and
+    /// [`CStr`](std::ffi::CStr) reuse their allocation.
     /// Other boxed values follow the allocation rules of [`Self::into_bytes`].
     /// This also supports [`Box<dyn StringBytes>`](Box).
     #[doc(hidden)]
@@ -351,7 +390,8 @@ pub trait StringBytes: sealed::Sealed {
 
     /// Converts the contents of a [`Box`] into a [`String`].
     ///
-    /// Boxed byte slices, byte arrays, and strings reuse their allocation.
+    /// Boxed byte slices, byte arrays, [`str`](prim@str), and
+    /// [`CStr`](std::ffi::CStr) reuse their allocation.
     /// Other boxed values follow the allocation rules of [`Self::try_into_string`].
     /// This also supports [`Box<dyn StringBytes>`](Box).
     ///

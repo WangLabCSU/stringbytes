@@ -1,4 +1,5 @@
 mod bytes;
+mod c_str;
 mod io;
 mod pointer;
 mod string;

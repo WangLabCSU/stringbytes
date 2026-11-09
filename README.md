@@ -102,4 +102,34 @@ assert_eq!(string.as_ptr(), address);
 assert_eq!(string.capacity(), capacity);
 ```
 
+### `&CStr`
+
+```rust
+use stringbytes::StringBytes;
+
+let text = c"hello";
+
+// C strings expose their contents without the trailing NUL.
+assert_eq!(text.try_borrow_str()?, "hello");
+
+// CStr::to_bytes borrows a slice; the trait method copies into a vector.
+let bytes: Vec<u8> = StringBytes::to_bytes(text);
+assert_eq!(bytes, b"hello");
+```
+
+### `CString`
+
+```rust
+use std::ffi::CString;
+use stringbytes::StringBytes;
+
+let text = CString::from(c"hello");
+let address = text.as_bytes().as_ptr();
+
+// Validate UTF-8 and transfer the buffer, excluding the trailing NUL.
+let string = text.try_into_string()?;
+assert_eq!(string, "hello");
+assert_eq!(string.as_ptr(), address);
+```
+
 <!-- cargo-rdme end -->
