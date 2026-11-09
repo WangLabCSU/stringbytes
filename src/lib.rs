@@ -396,6 +396,205 @@ pub trait StringBytes: sealed::Sealed {
 }
 
 #[cfg(test)]
+mod test_utils {
+    use std::ops::Deref;
+    use std::str::Utf8Error;
+    use std::string::FromUtf8Error;
+
+    use super::StringBytes;
+
+    // Concrete inputs stay in each implementation module. Conversion checks
+    // return their results so callers can also check copying or allocation reuse.
+
+    pub(super) fn assert_stable_bytes<T: StringBytes + ?Sized>(storage: &T) {
+        let expected = StringBytes::as_bytes(storage).to_vec();
+
+        for _ in 0..3 {
+            assert_eq!(StringBytes::as_bytes(storage), expected);
+
+            let _ = StringBytes::to_bytes(storage);
+            assert_eq!(StringBytes::as_bytes(storage), expected);
+
+            let _ = StringBytes::try_borrow_str(storage);
+            assert_eq!(StringBytes::as_bytes(storage), expected);
+
+            let _ = StringBytes::try_to_string(storage);
+            assert_eq!(StringBytes::as_bytes(storage), expected);
+        }
+    }
+
+    pub(super) fn assert_as_ref_matches_as_bytes<T>(storage: &T)
+    where
+        T: StringBytes + AsRef<[u8]> + ?Sized,
+    {
+        let expected = StringBytes::as_bytes(storage).to_vec();
+
+        for _ in 0..3 {
+            let bytes = StringBytes::as_bytes(storage);
+            let borrowed = <T as AsRef<[u8]>>::as_ref(storage);
+            // Slice pointer equality checks both the address and the length.
+            assert!(std::ptr::eq(bytes, borrowed));
+            assert_eq!(borrowed, expected);
+            assert_eq!(StringBytes::as_bytes(storage), expected);
+        }
+    }
+
+    pub(super) fn assert_as_mut_matches_as_bytes<T>(storage: &mut T)
+    where
+        T: StringBytes + AsMut<[u8]> + ?Sized,
+    {
+        let bytes = StringBytes::as_bytes(storage);
+        let address = bytes.as_ptr();
+        let mut expected = bytes.to_vec();
+
+        {
+            let borrowed = <T as AsMut<[u8]>>::as_mut(storage);
+            assert_eq!(borrowed.as_ptr(), address);
+            assert_eq!(borrowed.len(), expected.len());
+            assert_eq!(borrowed, expected);
+
+            // Mutations must affect the bytes subsequently observed by as_bytes.
+            for (byte, expected_byte) in borrowed.iter_mut().zip(&mut expected) {
+                *expected_byte = expected_byte.wrapping_add(1);
+                *byte = *expected_byte;
+            }
+        }
+
+        let bytes = StringBytes::as_bytes(storage);
+        assert_eq!(bytes.as_ptr(), address);
+        assert_eq!(bytes, expected);
+    }
+
+    pub(super) fn assert_deref_matches_as_bytes<T>(storage: &T)
+    where
+        T: StringBytes + Deref + ?Sized,
+        T::Target: StringBytes,
+    {
+        let expected = StringBytes::as_bytes(storage).to_vec();
+
+        for _ in 0..3 {
+            let bytes = StringBytes::as_bytes(storage);
+            let target_bytes = StringBytes::as_bytes(T::deref(storage));
+            assert!(std::ptr::eq(bytes, target_bytes));
+            assert_eq!(target_bytes, expected);
+            assert_eq!(StringBytes::as_bytes(storage), expected);
+        }
+    }
+
+    pub(super) fn assert_to_bytes_preserves_bytes<T: StringBytes + ?Sized>(storage: &T) -> Vec<u8> {
+        let expected = StringBytes::as_bytes(storage).to_vec();
+        let address = StringBytes::as_bytes(storage).as_ptr();
+        let mut bytes = StringBytes::to_bytes(storage);
+        assert_eq!(bytes, expected);
+        if !bytes.is_empty() {
+            assert_ne!(bytes.as_ptr(), address);
+            bytes[0] ^= 0xff;
+            assert_eq!(StringBytes::as_bytes(storage), expected);
+            bytes[0] ^= 0xff;
+        }
+        assert_eq!(StringBytes::as_bytes(storage), expected);
+        assert_eq!(StringBytes::as_bytes(storage).as_ptr(), address);
+        bytes
+    }
+
+    pub(super) fn assert_into_bytes_preserves_bytes<T: StringBytes>(storage: T) -> Vec<u8> {
+        let expected = StringBytes::as_bytes(&storage).to_vec();
+        let bytes = StringBytes::into_bytes(storage);
+        assert_eq!(bytes, expected);
+        bytes
+    }
+
+    pub(super) fn assert_try_borrow_str_preserves_bytes<T: StringBytes + ?Sized>(
+        storage: &T,
+    ) -> Result<&str, Utf8Error> {
+        let expected = StringBytes::as_bytes(storage).to_vec();
+        let result = StringBytes::try_borrow_str(storage);
+        assert_eq!(result, std::str::from_utf8(&expected));
+        if let Ok(text) = result {
+            assert!(std::ptr::eq(
+                text.as_bytes(),
+                StringBytes::as_bytes(storage)
+            ));
+        }
+        assert_eq!(StringBytes::as_bytes(storage), expected);
+        result
+    }
+
+    pub(super) fn assert_try_to_string_preserves_bytes<T: StringBytes + ?Sized>(
+        storage: &T,
+    ) -> Result<String, FromUtf8Error> {
+        let expected = StringBytes::as_bytes(storage).to_vec();
+        let address = StringBytes::as_bytes(storage).as_ptr();
+        let mut result = StringBytes::try_to_string(storage);
+        assert_string_result(&result, &expected);
+        match &mut result {
+            Ok(text) => {
+                if !text.is_empty() {
+                    assert_ne!(text.as_ptr(), address);
+                }
+                text.make_ascii_uppercase();
+                assert_eq!(StringBytes::as_bytes(storage), expected);
+                // Restore the contents for the caller's additional assertions.
+                text.clear();
+                text.push_str(std::str::from_utf8(&expected).unwrap());
+            }
+            Err(error) => assert_ne!(error.as_bytes().as_ptr(), address),
+        }
+        assert_eq!(StringBytes::as_bytes(storage), expected);
+        assert_eq!(StringBytes::as_bytes(storage).as_ptr(), address);
+        result
+    }
+
+    pub(super) fn assert_try_into_string_preserves_bytes<T: StringBytes>(
+        storage: T,
+    ) -> Result<String, FromUtf8Error> {
+        let expected = StringBytes::as_bytes(&storage).to_vec();
+        let result = StringBytes::try_into_string(storage);
+        assert_string_result(&result, &expected);
+        result
+    }
+
+    // Check both outcomes so always returning an error cannot pass the test.
+    fn assert_string_result(result: &Result<String, FromUtf8Error>, expected: &[u8]) {
+        match std::str::from_utf8(expected) {
+            Ok(text) => assert_eq!(result.as_ref().unwrap().as_str(), text),
+            Err(expected_error) => {
+                let error = result.as_ref().unwrap_err();
+                assert_eq!(error.utf8_error(), expected_error);
+                assert_eq!(error.as_bytes(), expected);
+            }
+        }
+    }
+
+    pub(super) fn assert_into_bytes_reuses_allocation<T: StringBytes>(
+        storage: T,
+        expected: &[u8],
+        address: *const u8,
+        capacity: usize,
+    ) {
+        let bytes = assert_into_bytes_preserves_bytes(storage);
+        assert_eq!(bytes, expected);
+        assert_eq!(bytes.as_ptr(), address);
+        assert_eq!(bytes.capacity(), capacity);
+    }
+
+    pub(super) fn assert_try_into_string_reuses_allocation<T: StringBytes>(
+        storage: T,
+        expected: &[u8],
+        address: *const u8,
+        capacity: usize,
+    ) {
+        let bytes = match assert_try_into_string_preserves_bytes(storage) {
+            Ok(text) => text.into_bytes(),
+            Err(error) => error.into_bytes(),
+        };
+        assert_eq!(bytes, expected);
+        assert_eq!(bytes.as_ptr(), address);
+        assert_eq!(bytes.capacity(), capacity);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::StringBytes;
 

@@ -62,250 +62,467 @@ impl_string_bytes_for_pointer!(Arc<T> => arc_into_bytes, arc_into_string);
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
-    use std::ops::Deref;
     use std::rc::Rc;
     use std::sync::Arc;
 
     #[cfg(feature = "bytes")]
     use bytes::{Bytes, BytesMut};
 
-    use super::super::test_support::assert_reuses_allocation;
+    use crate::test_utils::{
+        assert_as_mut_matches_as_bytes, assert_as_ref_matches_as_bytes,
+        assert_deref_matches_as_bytes, assert_into_bytes_preserves_bytes,
+        assert_into_bytes_reuses_allocation, assert_stable_bytes, assert_to_bytes_preserves_bytes,
+        assert_try_borrow_str_preserves_bytes, assert_try_into_string_preserves_bytes,
+        assert_try_into_string_reuses_allocation, assert_try_to_string_preserves_bytes,
+    };
     use crate::StringBytes;
 
-    fn for_each_borrowed_pointer(mut check: impl FnMut(&dyn StringBytes, &[u8], *const u8)) {
-        for input in [
-            b"".as_slice(),
-            b"text",
-            "é说明".as_bytes(),
-            b"\0e\xcc\x81",
-            b"ok\xff",
-        ] {
-            let mut bytes = Vec::from(input);
-            let address = bytes.as_ptr();
-            check(&&bytes, input, address);
-            check(&&mut bytes, input, address);
-            check(&input, input, input.as_ptr());
+    // Include NUL, decomposed Unicode, and invalid, incomplete, and overlong UTF-8.
+    const INPUTS: [&[u8]; 8] = [
+        b"",
+        b"text",
+        "é说明".as_bytes(),
+        b"\0e\xcc\x81",
+        b"ok\xff",
+        b"ok\xe2\x82",
+        b"\xc0\x80",
+        b"\xed\xa0\x80",
+    ];
 
-            let boxed = Box::<[u8]>::from(input);
-            let address = boxed.as_ptr();
-            check(&boxed, input, address);
-            let rc = Rc::<[u8]>::from(input);
-            let address = rc.as_ptr();
-            check(&rc, input, address);
-            let arc = Arc::<[u8]>::from(input);
-            let address = arc.as_ptr();
-            check(&arc, input, address);
+    #[test]
+    fn shared_reference_guarantees() {
+        for input in INPUTS {
+            let storage = input;
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_as_ref_matches_as_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage);
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
 
-            let bytes = Vec::from(input);
-            let address = bytes.as_ptr();
-            let nested = Rc::new(Arc::new(Box::new(bytes)));
-            check(&nested, input, address);
+        for input in INPUTS {
+            let source = input.to_vec();
+            let storage = &source;
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_as_ref_matches_as_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage);
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
 
-            let bytes = Vec::from(input);
-            let address = bytes.as_ptr();
-            let boxed: Box<dyn StringBytes> = Box::new(bytes);
-            check(&boxed, input, address);
-            let bytes = Vec::from(input);
-            let address = bytes.as_ptr();
-            let rc: Rc<dyn StringBytes> = Rc::new(bytes);
-            check(&rc, input, address);
-            let bytes = Vec::from(input);
-            let address = bytes.as_ptr();
-            let arc: Arc<dyn StringBytes + Send + Sync> = Arc::new(bytes);
-            check(&arc, input, address);
+        for input in [*b"text", *b"ok\xff\0"] {
+            let source = input;
+            let storage = &source;
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_as_ref_matches_as_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage);
+            let _ = assert_try_into_string_preserves_bytes(storage);
         }
 
         for input in ["", "text", "é说明", "\0e\u{301}"] {
-            let mut text = String::from(input);
-            let address = text.as_ptr();
-            check(&&text, input.as_bytes(), address);
-            check(&&mut text, input.as_bytes(), address);
-            check(&input, input.as_bytes(), input.as_ptr());
-            check(&text.as_mut_str(), input.as_bytes(), address);
-
-            let boxed = Box::<str>::from(input);
-            let address = boxed.as_ptr();
-            check(&boxed, input.as_bytes(), address);
-            let rc = Rc::<str>::from(input);
-            let address = rc.as_ptr();
-            check(&rc, input.as_bytes(), address);
-            let arc = Arc::<str>::from(input);
-            let address = arc.as_ptr();
-            check(&arc, input.as_bytes(), address);
-        }
-    }
-
-    fn check_allocation_reuse(into_bytes: bool) {
-        fn check<T: StringBytes>(storage: T, expected: &[u8], capacity: usize, into_bytes: bool) {
-            let address = storage.as_bytes().as_ptr();
-            assert_reuses_allocation(storage, expected, address, capacity, into_bytes);
+            let storage = input;
+            assert_eq!(StringBytes::as_bytes(&storage), input.as_bytes());
+            assert_stable_bytes(&storage);
+            assert_as_ref_matches_as_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage);
+            let _ = assert_try_into_string_preserves_bytes(storage);
         }
 
-        fn check_owners<T: StringBytes + Send + Sync + 'static>(
-            make: impl Fn() -> (T, usize),
-            expected: &[u8],
-            into_bytes: bool,
-        ) {
-            // Each wrapper receives fresh, uniquely owned storage.
-            let (storage, capacity) = make();
-            check(Box::new(storage), expected, capacity, into_bytes);
-            let (storage, capacity) = make();
-            let boxed: Box<dyn StringBytes> = Box::new(storage);
-            check(boxed, expected, capacity, into_bytes);
-
-            // Weak references must not force a copy, even after type erasure.
-            let (storage, capacity) = make();
-            let rc = Rc::new(storage);
-            let weak = Rc::downgrade(&rc);
-            check(rc, expected, capacity, into_bytes);
-            assert!(weak.upgrade().is_none());
-            let (storage, capacity) = make();
-            let rc: Rc<dyn StringBytes> = Rc::new(storage);
-            let weak = Rc::downgrade(&rc);
-            check(rc, expected, capacity, into_bytes);
-            assert!(weak.upgrade().is_none());
-
-            let (storage, capacity) = make();
-            let arc = Arc::new(storage);
-            let weak = Arc::downgrade(&arc);
-            check(arc, expected, capacity, into_bytes);
-            assert!(weak.upgrade().is_none());
-            let (storage, capacity) = make();
-            let arc: Arc<dyn StringBytes + Send + Sync> = Arc::new(storage);
-            let weak = Arc::downgrade(&arc);
-            check(arc, expected, capacity, into_bytes);
-            assert!(weak.upgrade().is_none());
-
-            let (storage, capacity) = make();
-            let nested: Box<dyn StringBytes> = Box::new(Rc::new(Arc::new(Box::new(storage))));
-            check(nested, expected, capacity, into_bytes);
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            let source = String::from(input);
+            let storage = &source;
+            assert_eq!(StringBytes::as_bytes(&storage), input.as_bytes());
+            assert_stable_bytes(&storage);
+            assert_as_ref_matches_as_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage);
+            let _ = assert_try_into_string_preserves_bytes(storage);
         }
 
-        for input in [b"".as_slice(), b"text", "é说明".as_bytes(), b"ok\xff"] {
-            let make_vec = || {
-                let mut bytes = Vec::with_capacity(input.len() + 32);
-                bytes.extend_from_slice(input);
-                let capacity = bytes.capacity();
-                (bytes, capacity)
-            };
-            check_owners(make_vec, input, into_bytes);
-            check_owners(
-                || (Box::<[u8]>::from(input), input.len()),
-                input,
-                into_bytes,
-            );
-            check_owners(
-                || {
-                    let (bytes, capacity) = make_vec();
-                    (Cow::<'static, [u8]>::Owned(bytes), capacity)
-                },
-                input,
-                into_bytes,
-            );
-            check_owners(
-                || {
-                    let (bytes, capacity) = make_vec();
-                    (Cow::<'static, Vec<u8>>::Owned(bytes), capacity)
-                },
-                input,
-                into_bytes,
-            );
-
-            if let Ok(text) = std::str::from_utf8(input) {
-                let make_string = || {
-                    let mut value = String::with_capacity(text.len() + 32);
-                    value.push_str(text);
-                    let capacity = value.capacity();
-                    (value, capacity)
-                };
-                check_owners(make_string, input, into_bytes);
-                check_owners(|| (Box::<str>::from(text), text.len()), input, into_bytes);
-                check_owners(
-                    || {
-                        let (text, capacity) = make_string();
-                        (Cow::<'static, str>::Owned(text), capacity)
-                    },
-                    input,
-                    into_bytes,
-                );
-                check_owners(
-                    || {
-                        let (text, capacity) = make_string();
-                        (Cow::<'static, String>::Owned(text), capacity)
-                    },
-                    input,
-                    into_bytes,
-                );
-            }
-
-            #[cfg(feature = "bytes")]
-            {
-                check_owners(
-                    || {
-                        let (bytes, capacity) = make_vec();
-                        (Bytes::from(bytes), capacity)
-                    },
-                    input,
-                    into_bytes,
-                );
-                check_owners(
-                    || (Bytes::from(Box::<[u8]>::from(input)), input.len()),
-                    input,
-                    into_bytes,
-                );
-                let make_mut = || {
-                    let mut bytes = BytesMut::with_capacity(input.len() + 32);
-                    bytes.extend_from_slice(input);
-                    let capacity = bytes.capacity();
-                    (bytes, capacity)
-                };
-                check_owners(make_mut, input, into_bytes);
-                check_owners(
-                    || {
-                        let (bytes, capacity) = make_mut();
-                        (bytes.freeze(), capacity)
-                    },
-                    input,
-                    into_bytes,
-                );
-            }
+        for input in INPUTS {
+            let source = input.to_vec();
+            let storage: &dyn StringBytes = &source;
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage);
+            let _ = assert_try_into_string_preserves_bytes(storage);
         }
-
-        check_owners(|| (Box::new(*b"text"), 4), b"text", into_bytes);
-        check_owners(|| (Box::new([b'a', 0xff]), 2), b"a\xff", into_bytes);
-        check_owners(|| (Box::new([0_u8; 0]), 0), b"", into_bytes);
     }
 
     #[test]
-    fn as_bytes_forwards_the_original_slice() {
-        for_each_borrowed_pointer(|storage, expected, address| {
-            for _ in 0..3 {
-                let bytes = StringBytes::as_bytes(storage);
-                assert_eq!(bytes, expected);
-                assert_eq!(bytes.as_ptr(), address);
-            }
-        });
+    fn mutable_reference_guarantees() {
+        for input in INPUTS {
+            let mut source = input.to_vec();
+            let mut storage = source.as_mut_slice();
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_as_ref_matches_as_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(&mut *storage);
+            let _ = assert_try_into_string_preserves_bytes(&mut *storage);
+            assert_as_mut_matches_as_bytes(&mut storage);
+        }
+
+        for input in INPUTS {
+            let mut source = input.to_vec();
+            let mut storage = &mut source;
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_as_ref_matches_as_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(&mut *storage);
+            let _ = assert_try_into_string_preserves_bytes(&mut *storage);
+            assert_as_mut_matches_as_bytes(&mut storage);
+        }
+
+        for input in [*b"text", *b"ok\xff\0"] {
+            let mut source = input;
+            let mut storage = &mut source;
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_as_ref_matches_as_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes::<&mut [u8; 4]>(&mut *storage);
+            let _ = assert_try_into_string_preserves_bytes::<&mut [u8; 4]>(&mut *storage);
+            assert_as_mut_matches_as_bytes(&mut storage);
+        }
+
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            let mut source = String::from(input);
+            let storage = source.as_mut_str();
+            assert_eq!(StringBytes::as_bytes(&storage), input.as_bytes());
+            assert_stable_bytes(&storage);
+            assert_as_ref_matches_as_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(&mut *storage);
+            let _ = assert_try_into_string_preserves_bytes(&mut *storage);
+        }
+
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            let mut source = String::from(input);
+            let storage = &mut source;
+            assert_eq!(StringBytes::as_bytes(&storage), input.as_bytes());
+            assert_stable_bytes(&storage);
+            assert_as_ref_matches_as_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(&mut *storage);
+            let _ = assert_try_into_string_preserves_bytes(&mut *storage);
+        }
+
+        for input in INPUTS {
+            let mut source = input.to_vec();
+            let storage: &mut dyn StringBytes = &mut source;
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(&mut *storage);
+            let _ = assert_try_into_string_preserves_bytes(&mut *storage);
+        }
     }
 
     #[test]
-    fn to_bytes_copies_and_preserves_the_source() {
-        for_each_borrowed_pointer(|storage, expected, address| {
-            let mut bytes = StringBytes::to_bytes(storage);
-            assert_eq!(bytes, expected);
-            if !bytes.is_empty() {
-                assert_ne!(bytes.as_ptr(), address);
-                bytes[0] ^= 0xff;
-            }
-            assert_eq!(storage.as_bytes(), expected);
-            assert_eq!(storage.as_bytes().as_ptr(), address);
-        });
+    fn box_guarantees() {
+        for input in INPUTS {
+            let mut storage = Box::<[u8]>::from(input);
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_as_ref_matches_as_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage.clone());
+            let _ = assert_try_into_string_preserves_bytes(storage.clone());
+            assert_as_mut_matches_as_bytes(&mut storage);
+        }
+
+        for input in INPUTS {
+            let storage = Box::new(input.to_vec());
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage.clone());
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
+
+        for input in [*b"text", *b"ok\xff\0"] {
+            let storage = Box::new(input);
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage.clone());
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
+
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            let storage = Box::<str>::from(input);
+            assert_eq!(StringBytes::as_bytes(&storage), input.as_bytes());
+            assert_stable_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage.clone());
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
+
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            let storage = Box::new(String::from(input));
+            assert_eq!(StringBytes::as_bytes(&storage), input.as_bytes());
+            assert_stable_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage.clone());
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
+    }
+
+    #[test]
+    fn box_dyn_guarantees() {
+        for input in INPUTS {
+            let storage: Box<dyn StringBytes> = Box::new(input.to_vec());
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage);
+            let storage: Box<dyn StringBytes> = Box::new(input.to_vec());
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
+    }
+
+    #[test]
+    fn rc_guarantees() {
+        for input in INPUTS {
+            let storage = Rc::<[u8]>::from(input);
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_as_ref_matches_as_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage.clone());
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
+
+        for input in INPUTS {
+            let storage = Rc::new(input.to_vec());
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage.clone());
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
+
+        for input in [*b"text", *b"ok\xff\0"] {
+            let storage = Rc::new(input);
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage.clone());
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
+
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            let storage = Rc::<str>::from(input);
+            assert_eq!(StringBytes::as_bytes(&storage), input.as_bytes());
+            assert_stable_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage.clone());
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
+
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            let storage = Rc::new(String::from(input));
+            assert_eq!(StringBytes::as_bytes(&storage), input.as_bytes());
+            assert_stable_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage.clone());
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
+    }
+
+    #[test]
+    fn rc_dyn_guarantees() {
+        for input in INPUTS {
+            let storage: Rc<dyn StringBytes> = Rc::new(input.to_vec());
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage);
+            let storage: Rc<dyn StringBytes> = Rc::new(input.to_vec());
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
+    }
+
+    #[test]
+    fn arc_guarantees() {
+        for input in INPUTS {
+            let storage = Arc::<[u8]>::from(input);
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_as_ref_matches_as_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage.clone());
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
+
+        for input in INPUTS {
+            let storage = Arc::new(input.to_vec());
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage.clone());
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
+
+        for input in [*b"text", *b"ok\xff\0"] {
+            let storage = Arc::new(input);
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage.clone());
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
+
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            let storage = Arc::<str>::from(input);
+            assert_eq!(StringBytes::as_bytes(&storage), input.as_bytes());
+            assert_stable_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage.clone());
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
+
+        for input in ["", "text", "é说明", "\0e\u{301}"] {
+            let storage = Arc::new(String::from(input));
+            assert_eq!(StringBytes::as_bytes(&storage), input.as_bytes());
+            assert_stable_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage.clone());
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
+    }
+
+    #[test]
+    fn arc_dyn_guarantees() {
+        for input in INPUTS {
+            let storage: Arc<dyn StringBytes + Send + Sync> = Arc::new(input.to_vec());
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage);
+            let storage: Arc<dyn StringBytes + Send + Sync> = Arc::new(input.to_vec());
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
+    }
+
+    #[test]
+    fn nested_pointer_guarantees() {
+        for input in INPUTS {
+            let storage = Rc::new(Arc::new(Box::new(input.to_vec())));
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage.clone());
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
     }
 
     #[test]
     fn into_bytes_copies_borrowed_and_shared_storage() {
         fn check<T: StringBytes>(storage: T, expected: &[u8]) {
             let address = storage.as_bytes().as_ptr();
-            let bytes = storage.into_bytes();
+            let bytes = assert_into_bytes_preserves_bytes(storage);
             assert_eq!(bytes, expected);
             if !bytes.is_empty() {
                 assert_ne!(bytes.as_ptr(), address);
@@ -369,50 +586,134 @@ mod tests {
 
     #[test]
     fn into_bytes_reuses_allocations_through_wrappers() {
-        check_allocation_reuse(true);
-    }
+        fn check_owners<T: StringBytes + Send + Sync + 'static>(
+            make: impl Fn() -> (T, usize),
+            expected: &[u8],
+        ) {
+            // Each wrapper receives fresh, uniquely owned storage.
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            assert_into_bytes_reuses_allocation(Box::new(storage), expected, address, capacity);
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let boxed: Box<dyn StringBytes> = Box::new(storage);
+            assert_into_bytes_reuses_allocation(boxed, expected, address, capacity);
 
-    #[test]
-    fn try_borrow_str_forwards_contents_and_errors() {
-        for_each_borrowed_pointer(|storage, expected, address| {
-            match (
-                StringBytes::try_borrow_str(storage),
-                std::str::from_utf8(expected),
-            ) {
-                (Ok(actual), Ok(expected)) => {
-                    assert_eq!(actual, expected);
-                    assert_eq!(actual.as_ptr(), address);
-                }
-                (Err(actual), Err(expected)) => assert_eq!(actual, expected),
-                result => panic!("unexpected UTF-8 conversion: {result:?}"),
-            }
-        });
-    }
+            // Weak references must not force a copy, even after type erasure.
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let rc = Rc::new(storage);
+            let weak = Rc::downgrade(&rc);
+            assert_into_bytes_reuses_allocation(rc, expected, address, capacity);
+            assert!(weak.upgrade().is_none());
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let rc: Rc<dyn StringBytes> = Rc::new(storage);
+            let weak = Rc::downgrade(&rc);
+            assert_into_bytes_reuses_allocation(rc, expected, address, capacity);
+            assert!(weak.upgrade().is_none());
 
-    #[test]
-    fn try_to_string_copies_and_preserves_the_source() {
-        for_each_borrowed_pointer(|storage, expected, address| {
-            let mut bytes = match StringBytes::try_to_string(storage) {
-                Ok(text) => {
-                    assert_eq!(text, std::str::from_utf8(expected).unwrap());
-                    text.into_bytes()
-                }
-                Err(error) => {
-                    assert_eq!(
-                        error.utf8_error(),
-                        std::str::from_utf8(expected).unwrap_err()
-                    );
-                    error.into_bytes()
-                }
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let arc = Arc::new(storage);
+            let weak = Arc::downgrade(&arc);
+            assert_into_bytes_reuses_allocation(arc, expected, address, capacity);
+            assert!(weak.upgrade().is_none());
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let arc: Arc<dyn StringBytes + Send + Sync> = Arc::new(storage);
+            let weak = Arc::downgrade(&arc);
+            assert_into_bytes_reuses_allocation(arc, expected, address, capacity);
+            assert!(weak.upgrade().is_none());
+
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let nested: Box<dyn StringBytes> = Box::new(Rc::new(Arc::new(Box::new(storage))));
+            assert_into_bytes_reuses_allocation(nested, expected, address, capacity);
+        }
+
+        for input in [b"".as_slice(), b"text", "é说明".as_bytes(), b"ok\xff"] {
+            let make_vec = || {
+                let mut bytes = Vec::with_capacity(input.len() + 32);
+                bytes.extend_from_slice(input);
+                let capacity = bytes.capacity();
+                (bytes, capacity)
             };
-            assert_eq!(bytes, expected);
-            if !bytes.is_empty() {
-                assert_ne!(bytes.as_ptr(), address);
-                bytes[0] ^= 0xff;
+            check_owners(make_vec, input);
+            check_owners(|| (Box::<[u8]>::from(input), input.len()), input);
+            check_owners(
+                || {
+                    let (bytes, capacity) = make_vec();
+                    (Cow::<'static, [u8]>::Owned(bytes), capacity)
+                },
+                input,
+            );
+            check_owners(
+                || {
+                    let (bytes, capacity) = make_vec();
+                    (Cow::<'static, Vec<u8>>::Owned(bytes), capacity)
+                },
+                input,
+            );
+
+            if let Ok(text) = std::str::from_utf8(input) {
+                let make_string = || {
+                    let mut value = String::with_capacity(text.len() + 32);
+                    value.push_str(text);
+                    let capacity = value.capacity();
+                    (value, capacity)
+                };
+                check_owners(make_string, input);
+                check_owners(|| (Box::<str>::from(text), text.len()), input);
+                check_owners(
+                    || {
+                        let (text, capacity) = make_string();
+                        (Cow::<'static, str>::Owned(text), capacity)
+                    },
+                    input,
+                );
+                check_owners(
+                    || {
+                        let (text, capacity) = make_string();
+                        (Cow::<'static, String>::Owned(text), capacity)
+                    },
+                    input,
+                );
             }
-            assert_eq!(storage.as_bytes(), expected);
-            assert_eq!(storage.as_bytes().as_ptr(), address);
-        });
+
+            #[cfg(feature = "bytes")]
+            {
+                check_owners(
+                    || {
+                        let (bytes, capacity) = make_vec();
+                        (Bytes::from(bytes), capacity)
+                    },
+                    input,
+                );
+                check_owners(
+                    || (Bytes::from(Box::<[u8]>::from(input)), input.len()),
+                    input,
+                );
+                let make_mut = || {
+                    let mut bytes = BytesMut::with_capacity(input.len() + 32);
+                    bytes.extend_from_slice(input);
+                    let capacity = bytes.capacity();
+                    (bytes, capacity)
+                };
+                check_owners(make_mut, input);
+                check_owners(
+                    || {
+                        let (bytes, capacity) = make_mut();
+                        (bytes.freeze(), capacity)
+                    },
+                    input,
+                );
+            }
+        }
+
+        check_owners(|| (Box::new(*b"text"), 4), b"text");
+        check_owners(|| (Box::new([b'a', 0xff]), 2), b"a\xff");
+        check_owners(|| (Box::new([0_u8; 0]), 0), b"");
     }
 
     #[test]
@@ -562,7 +863,7 @@ mod tests {
     fn try_into_string_copies_borrowed_and_shared_storage() {
         fn check<T: StringBytes>(storage: T) {
             let pointer = storage.as_bytes().as_ptr();
-            let text = storage.try_into_string().unwrap();
+            let text = assert_try_into_string_preserves_bytes(storage).unwrap();
             assert_eq!(text, "text");
             // Nonempty, borrowed or shared data needs a separate allocation.
             assert_ne!(text.as_ptr(), pointer);
@@ -600,7 +901,139 @@ mod tests {
 
     #[test]
     fn try_into_string_reuses_allocations_through_wrappers() {
-        check_allocation_reuse(false);
+        fn check_owners<T: StringBytes + Send + Sync + 'static>(
+            make: impl Fn() -> (T, usize),
+            expected: &[u8],
+        ) {
+            // Each wrapper receives fresh, uniquely owned storage.
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            assert_try_into_string_reuses_allocation(
+                Box::new(storage),
+                expected,
+                address,
+                capacity,
+            );
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let boxed: Box<dyn StringBytes> = Box::new(storage);
+            assert_try_into_string_reuses_allocation(boxed, expected, address, capacity);
+
+            // Weak references must not force a copy, even after type erasure.
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let rc = Rc::new(storage);
+            let weak = Rc::downgrade(&rc);
+            assert_try_into_string_reuses_allocation(rc, expected, address, capacity);
+            assert!(weak.upgrade().is_none());
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let rc: Rc<dyn StringBytes> = Rc::new(storage);
+            let weak = Rc::downgrade(&rc);
+            assert_try_into_string_reuses_allocation(rc, expected, address, capacity);
+            assert!(weak.upgrade().is_none());
+
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let arc = Arc::new(storage);
+            let weak = Arc::downgrade(&arc);
+            assert_try_into_string_reuses_allocation(arc, expected, address, capacity);
+            assert!(weak.upgrade().is_none());
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let arc: Arc<dyn StringBytes + Send + Sync> = Arc::new(storage);
+            let weak = Arc::downgrade(&arc);
+            assert_try_into_string_reuses_allocation(arc, expected, address, capacity);
+            assert!(weak.upgrade().is_none());
+
+            let (storage, capacity) = make();
+            let address = storage.as_bytes().as_ptr();
+            let nested: Box<dyn StringBytes> = Box::new(Rc::new(Arc::new(Box::new(storage))));
+            assert_try_into_string_reuses_allocation(nested, expected, address, capacity);
+        }
+
+        for input in [b"".as_slice(), b"text", "é说明".as_bytes(), b"ok\xff"] {
+            let make_vec = || {
+                let mut bytes = Vec::with_capacity(input.len() + 32);
+                bytes.extend_from_slice(input);
+                let capacity = bytes.capacity();
+                (bytes, capacity)
+            };
+            check_owners(make_vec, input);
+            check_owners(|| (Box::<[u8]>::from(input), input.len()), input);
+            check_owners(
+                || {
+                    let (bytes, capacity) = make_vec();
+                    (Cow::<'static, [u8]>::Owned(bytes), capacity)
+                },
+                input,
+            );
+            check_owners(
+                || {
+                    let (bytes, capacity) = make_vec();
+                    (Cow::<'static, Vec<u8>>::Owned(bytes), capacity)
+                },
+                input,
+            );
+
+            if let Ok(text) = std::str::from_utf8(input) {
+                let make_string = || {
+                    let mut value = String::with_capacity(text.len() + 32);
+                    value.push_str(text);
+                    let capacity = value.capacity();
+                    (value, capacity)
+                };
+                check_owners(make_string, input);
+                check_owners(|| (Box::<str>::from(text), text.len()), input);
+                check_owners(
+                    || {
+                        let (text, capacity) = make_string();
+                        (Cow::<'static, str>::Owned(text), capacity)
+                    },
+                    input,
+                );
+                check_owners(
+                    || {
+                        let (text, capacity) = make_string();
+                        (Cow::<'static, String>::Owned(text), capacity)
+                    },
+                    input,
+                );
+            }
+
+            #[cfg(feature = "bytes")]
+            {
+                check_owners(
+                    || {
+                        let (bytes, capacity) = make_vec();
+                        (Bytes::from(bytes), capacity)
+                    },
+                    input,
+                );
+                check_owners(
+                    || (Bytes::from(Box::<[u8]>::from(input)), input.len()),
+                    input,
+                );
+                let make_mut = || {
+                    let mut bytes = BytesMut::with_capacity(input.len() + 32);
+                    bytes.extend_from_slice(input);
+                    let capacity = bytes.capacity();
+                    (bytes, capacity)
+                };
+                check_owners(make_mut, input);
+                check_owners(
+                    || {
+                        let (bytes, capacity) = make_mut();
+                        (bytes.freeze(), capacity)
+                    },
+                    input,
+                );
+            }
+        }
+
+        check_owners(|| (Box::new(*b"text"), 4), b"text");
+        check_owners(|| (Box::new([b'a', 0xff]), 2), b"a\xff");
+        check_owners(|| (Box::new([0_u8; 0]), 0), b"");
     }
 
     #[test]
@@ -668,103 +1101,5 @@ mod tests {
         assert_eq!(text, "text");
         assert_eq!(arc.as_bytes(), b"text");
         assert_ne!(text.as_ptr(), arc.as_bytes().as_ptr());
-    }
-
-    #[test]
-    fn as_ref_borrows_the_same_slice_as_as_bytes() {
-        fn check<T: StringBytes + AsRef<[u8]> + ?Sized>(storage: &T) {
-            assert!(std::ptr::eq(
-                StringBytes::as_bytes(storage),
-                storage.as_ref()
-            ));
-        }
-
-        for input in [b"".as_slice(), b"AC", b"A\xff"] {
-            check(&input);
-            check(&Box::<[u8]>::from(input));
-            check(&Rc::<[u8]>::from(input));
-            check(&Arc::<[u8]>::from(input));
-        }
-    }
-
-    #[test]
-    fn as_mut_borrows_the_same_slice_as_as_bytes() {
-        fn check<T: StringBytes + AsMut<[u8]> + ?Sized>(storage: &mut T) {
-            let address = storage.as_bytes().as_ptr();
-            let expected: Vec<u8> = storage
-                .as_bytes()
-                .iter()
-                .map(|byte| byte.wrapping_add(1))
-                .collect();
-            let bytes = storage.as_mut();
-            assert_eq!(bytes.as_ptr(), address);
-            assert_eq!(bytes.len(), expected.len());
-            for byte in bytes {
-                *byte = byte.wrapping_add(1);
-            }
-            assert_eq!(storage.as_bytes(), expected);
-        }
-
-        for input in [b"".as_slice(), b"AC", b"A\xff"] {
-            let mut bytes = Vec::from(input);
-            check(&mut bytes.as_mut_slice());
-            check(&mut &mut bytes);
-            check(&mut Box::<[u8]>::from(input));
-        }
-    }
-
-    #[test]
-    fn deref_target_implements_string_bytes_and_borrows_the_same_slice() {
-        fn check<T>(storage: &T, expected: &[u8])
-        where
-            T: StringBytes + Deref + ?Sized,
-            T::Target: StringBytes,
-        {
-            for _ in 0..3 {
-                let bytes = StringBytes::as_bytes(storage);
-                let target_bytes = StringBytes::as_bytes(T::deref(storage));
-                assert!(std::ptr::eq(bytes, target_bytes));
-                assert_eq!(target_bytes, expected);
-            }
-        }
-
-        fn check_wrappers<T: StringBytes + Send + Sync>(mut storage: T, expected: &[u8]) {
-            check(&&storage, expected);
-            check(&&mut storage, expected);
-            let boxed = Box::new(storage);
-            check(&boxed, expected);
-            let arc = Arc::new(boxed);
-            check(&arc, expected);
-            let rc = Rc::new(arc);
-            check(&rc, expected);
-        }
-
-        for input in [b"".as_slice(), b"text", b"\0e\xcc\x81", b"ok\xff"] {
-            check(&input, input);
-            check_wrappers(Vec::from(input), input);
-            check(&Box::<[u8]>::from(input), input);
-            check(&Rc::<[u8]>::from(input), input);
-            check(&Arc::<[u8]>::from(input), input);
-
-            // Type erasure must preserve both the bound and the byte view.
-            let mut boxed: Box<dyn StringBytes> = Box::new(Vec::from(input));
-            check(&boxed, input);
-            check(&&*boxed, input);
-            check(&&mut *boxed, input);
-            let rc: Rc<dyn StringBytes> = Rc::new(Vec::from(input));
-            check(&rc, input);
-            let arc: Arc<dyn StringBytes + Send + Sync> = Arc::new(Vec::from(input));
-            check(&arc, input);
-        }
-
-        check_wrappers([0_u8; 0], b"");
-        check_wrappers([b'a', 0xff], b"a\xff");
-        for input in ["", "text", "é说明", "\0e\u{301}"] {
-            check(&input, input.as_bytes());
-            check_wrappers(String::from(input), input.as_bytes());
-            check(&Box::<str>::from(input), input.as_bytes());
-            check(&Rc::<str>::from(input), input.as_bytes());
-            check(&Arc::<str>::from(input), input.as_bytes());
-        }
     }
 }

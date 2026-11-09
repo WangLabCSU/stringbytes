@@ -137,34 +137,18 @@ impl_string_bytes!(BytesMut {
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
-    use std::ops::Deref;
 
     #[cfg(feature = "bytes")]
     use bytes::{Bytes, BytesMut};
 
-    use super::super::test_support::assert_reuses_allocation;
+    use crate::test_utils::{
+        assert_as_mut_matches_as_bytes, assert_as_ref_matches_as_bytes,
+        assert_deref_matches_as_bytes, assert_into_bytes_preserves_bytes,
+        assert_into_bytes_reuses_allocation, assert_stable_bytes, assert_to_bytes_preserves_bytes,
+        assert_try_borrow_str_preserves_bytes, assert_try_into_string_preserves_bytes,
+        assert_try_into_string_reuses_allocation, assert_try_to_string_preserves_bytes,
+    };
     use crate::StringBytes;
-
-    fn for_each_sized_cow(mut check: impl FnMut(&dyn StringBytes, &[u8])) {
-        fn check_variants<const N: usize>(
-            input: [u8; N],
-            check: &mut impl FnMut(&dyn StringBytes, &[u8]),
-        ) {
-            check(&Cow::Borrowed(&input), &input);
-            let cow = Cow::<'_, [u8; N]>::Owned(input);
-            check(&cow, cow.as_ref());
-
-            let vector = Vec::from(input);
-            check(&Cow::Borrowed(&vector), &vector);
-            let cow = Cow::<'_, Vec<u8>>::Owned(vector);
-            check(&cow, cow.as_ref());
-        }
-
-        check_variants([], &mut check);
-        for input in [*b"text", *b"\0e\xcc\x81", *b"ok\xff\0", *b"ok\xe2\x82"] {
-            check_variants(input, &mut check);
-        }
-    }
 
     fn check_cow_array_conversions(into_bytes: bool) {
         fn check<const N: usize>(input: [u8; N], into_bytes: bool) {
@@ -190,123 +174,14 @@ mod tests {
         check(*b"ok\xff", into_bytes);
     }
 
-    fn check_owned_conversions(into_bytes: bool) {
-        for input in [
-            b"".as_slice(),
-            b"text",
-            "é说明".as_bytes(),
-            b"\0e\xcc\x81",
-            b"ok\xff",
-        ] {
-            let make_vec = || {
-                let mut bytes = Vec::with_capacity(input.len() + 32);
-                bytes.extend_from_slice(input);
-                bytes
-            };
-
-            let bytes = make_vec();
-            let address = bytes.as_ptr();
-            let capacity = bytes.capacity();
-            assert_reuses_allocation(bytes, input, address, capacity, into_bytes);
-
-            let bytes = make_vec();
-            let address = bytes.as_ptr();
-            let capacity = bytes.capacity();
-            assert_reuses_allocation(
-                Cow::<'_, [u8]>::Owned(bytes),
-                input,
-                address,
-                capacity,
-                into_bytes,
-            );
-
-            let bytes = make_vec();
-            let address = bytes.as_ptr();
-            let capacity = bytes.capacity();
-            assert_reuses_allocation(
-                Cow::<'_, Vec<u8>>::Owned(bytes),
-                input,
-                address,
-                capacity,
-                into_bytes,
-            );
-
-            #[cfg(feature = "bytes")]
-            {
-                let bytes = make_vec();
-                let address = bytes.as_ptr();
-                let capacity = bytes.capacity();
-                assert_reuses_allocation(Bytes::from(bytes), input, address, capacity, into_bytes);
-
-                let bytes = Box::<[u8]>::from(input);
-                let address = bytes.as_ptr();
-                assert_reuses_allocation(
-                    Bytes::from(bytes),
-                    input,
-                    address,
-                    input.len(),
-                    into_bytes,
-                );
-
-                let mut bytes = BytesMut::with_capacity(input.len() + 32);
-                bytes.extend_from_slice(input);
-                let address = bytes.as_ptr();
-                let capacity = bytes.capacity();
-                assert_reuses_allocation(bytes, input, address, capacity, into_bytes);
-
-                let mut bytes = BytesMut::with_capacity(input.len() + 32);
-                bytes.extend_from_slice(input);
-                let address = bytes.as_ptr();
-                let capacity = bytes.capacity();
-                assert_reuses_allocation(bytes.freeze(), input, address, capacity, into_bytes);
-            }
-        }
-    }
-
-    #[cfg(feature = "bytes")]
-    fn check_sliced_allocation_reuse(into_bytes: bool) {
-        for input in [b"text".as_slice(), b"ok\xff"] {
-            // A slice's address differs from the allocation's original address.
-            let mut original = Vec::with_capacity(64);
-            original.extend_from_slice(b"prefix");
-            original.extend_from_slice(input);
-            let address = original.as_ptr();
-            let capacity = original.capacity();
-            let original = Bytes::from(original);
-            let slice = original.slice(6..);
-            assert_ne!(slice.as_ptr(), address);
-            drop(original);
-            assert_reuses_allocation(slice, input, address, capacity, into_bytes);
-
-            let mut original = BytesMut::with_capacity(64);
-            original.extend_from_slice(b"prefix");
-            original.extend_from_slice(input);
-            let address = original.as_ptr();
-            let capacity = original.capacity();
-            let prefix = original.split_to(6);
-            assert_ne!(original.as_ptr(), address);
-            drop(prefix);
-            assert_reuses_allocation(original, input, address, capacity, into_bytes);
-        }
-    }
-
     fn check_copied_conversion<T: StringBytes>(storage: T, expected: &[u8], into_bytes: bool) {
         let address = storage.as_bytes().as_ptr();
         let bytes = if into_bytes {
-            storage.into_bytes()
+            assert_into_bytes_preserves_bytes(storage)
         } else {
-            match storage.try_into_string() {
-                Ok(text) => {
-                    assert_eq!(text, std::str::from_utf8(expected).unwrap());
-                    text.into_bytes()
-                }
-                Err(error) => {
-                    assert_eq!(
-                        error.utf8_error(),
-                        std::str::from_utf8(expected).unwrap_err()
-                    );
-                    error.into_bytes()
-                }
+            match assert_try_into_string_preserves_bytes(storage) {
+                Ok(text) => text.into_bytes(),
+                Err(error) => error.into_bytes(),
             }
         };
         assert_eq!(bytes, expected);
@@ -332,74 +207,283 @@ mod tests {
         }
     }
 
+    // Include NUL, decomposed Unicode, and invalid, incomplete, and overlong UTF-8.
+    const INPUTS: [&[u8]; 8] = [
+        b"",
+        b"text",
+        "é说明".as_bytes(),
+        b"\0e\xcc\x81",
+        b"ok\xff",
+        b"ok\xe2\x82",
+        b"\xc0\x80",
+        b"\xed\xa0\x80",
+    ];
+
     #[test]
-    fn as_bytes_borrows_the_as_ref_slice() {
-        fn check<T: StringBytes + AsRef<[u8]> + ?Sized>(storage: &T) {
-            for _ in 0..3 {
-                assert!(std::ptr::eq(
-                    StringBytes::as_bytes(storage),
-                    storage.as_ref()
-                ));
-            }
+    fn array_guarantees() {
+        for input in [
+            *b"text",
+            *b"\0e\xcc\x81",
+            *b"ok\xff\0",
+            *b"ok\xe2\x82",
+            *b"\xc0\x80\0\0",
+            *b"\xed\xa0\x80\0",
+        ] {
+            let mut storage = input;
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_as_ref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage);
+            let _ = assert_try_into_string_preserves_bytes(storage);
+            assert_as_mut_matches_as_bytes(&mut storage);
         }
 
-        for input in [b"".as_slice(), b"text", b"\0e\xcc\x81", b"ok\xff"] {
-            check(input);
-            check(&Vec::from(input));
-            check(&Cow::Borrowed(input));
-            check(&Cow::<'_, [u8]>::Owned(Vec::from(input)));
-            #[cfg(feature = "bytes")]
-            {
-                check(&Bytes::from_static(input));
-                check(&BytesMut::from(input));
-            }
-        }
-        check(&[0_u8; 0]);
-        check(&[0_u8; 4]);
-        check(&[0xff_u8; 64]);
+        let mut storage = [0_u8; 0];
+        assert_eq!(StringBytes::as_bytes(&storage), [0_u8; 0]);
+        assert_stable_bytes(&storage);
+        assert_as_ref_matches_as_bytes(&storage);
+        assert_to_bytes_preserves_bytes(&storage);
+        let _ = assert_try_borrow_str_preserves_bytes(&storage);
+        let _ = assert_try_to_string_preserves_bytes(&storage);
+        assert_into_bytes_preserves_bytes(storage);
+        let _ = assert_try_into_string_preserves_bytes(storage);
+        assert_as_mut_matches_as_bytes(&mut storage);
+
+        let mut storage = [0xff_u8; 64];
+        assert_eq!(StringBytes::as_bytes(&storage), [0xff_u8; 64]);
+        assert_stable_bytes(&storage);
+        assert_as_ref_matches_as_bytes(&storage);
+        assert_to_bytes_preserves_bytes(&storage);
+        let _ = assert_try_borrow_str_preserves_bytes(&storage);
+        let _ = assert_try_to_string_preserves_bytes(&storage);
+        assert_into_bytes_preserves_bytes(storage);
+        let _ = assert_try_into_string_preserves_bytes(storage);
+        assert_as_mut_matches_as_bytes(&mut storage);
     }
 
     #[test]
-    fn as_bytes_borrows_sized_cow_storage() {
-        for_each_sized_cow(|storage, expected| {
-            assert!(std::ptr::eq(storage.as_bytes(), expected));
-        });
+    fn slice_guarantees() {
+        for input in INPUTS {
+            let mut buffer = input.to_vec();
+            let storage = buffer.as_mut_slice();
+            assert_eq!(StringBytes::as_bytes(storage), input);
+            assert_stable_bytes(storage);
+            assert_as_ref_matches_as_bytes(storage);
+            assert_to_bytes_preserves_bytes(storage);
+            let _ = assert_try_borrow_str_preserves_bytes(storage);
+            let _ = assert_try_to_string_preserves_bytes(storage);
+            assert_as_mut_matches_as_bytes(storage);
+        }
     }
 
     #[test]
-    fn to_bytes_copies_and_preserves_the_source() {
-        fn check<T: StringBytes + ?Sized>(storage: &T) {
-            let expected = storage.as_bytes().to_vec();
-            let address = storage.as_bytes().as_ptr();
-            let mut bytes = StringBytes::to_bytes(storage);
-            assert_eq!(bytes, expected);
-            if !bytes.is_empty() {
-                assert_ne!(bytes.as_ptr(), address);
-                bytes[0] ^= 0xff;
+    fn vec_guarantees() {
+        for input in INPUTS {
+            let mut storage = input.to_vec();
+            assert_eq!(StringBytes::as_bytes(&storage), input);
+            assert_stable_bytes(&storage);
+            assert_as_ref_matches_as_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage.clone());
+            let _ = assert_try_into_string_preserves_bytes(storage.clone());
+            assert_as_mut_matches_as_bytes(&mut storage);
+        }
+    }
+
+    #[test]
+    fn cow_slice_guarantees() {
+        for input in INPUTS {
+            for storage in [Cow::Borrowed(input), Cow::<'_, [u8]>::Owned(input.to_vec())] {
+                assert_eq!(StringBytes::as_bytes(&storage), input);
+                assert_stable_bytes(&storage);
+                assert_as_ref_matches_as_bytes(&storage);
+                assert_deref_matches_as_bytes(&storage);
+                assert_to_bytes_preserves_bytes(&storage);
+                let _ = assert_try_borrow_str_preserves_bytes(&storage);
+                let _ = assert_try_to_string_preserves_bytes(&storage);
+                assert_into_bytes_preserves_bytes(storage.clone());
+                let _ = assert_try_into_string_preserves_bytes(storage);
             }
-            assert_eq!(storage.as_bytes(), expected);
-            assert_eq!(storage.as_bytes().as_ptr(), address);
+        }
+    }
+
+    #[test]
+    fn cow_vec_guarantees() {
+        for input in INPUTS {
+            let vector = input.to_vec();
+            for storage in [
+                Cow::Borrowed(&vector),
+                Cow::<'_, Vec<u8>>::Owned(input.to_vec()),
+            ] {
+                assert_eq!(StringBytes::as_bytes(&storage), input);
+                assert_stable_bytes(&storage);
+                assert_deref_matches_as_bytes(&storage);
+                assert_to_bytes_preserves_bytes(&storage);
+                let _ = assert_try_borrow_str_preserves_bytes(&storage);
+                let _ = assert_try_to_string_preserves_bytes(&storage);
+                assert_into_bytes_preserves_bytes(storage.clone());
+                let _ = assert_try_into_string_preserves_bytes(storage);
+            }
+        }
+    }
+
+    #[test]
+    fn cow_array_guarantees() {
+        for input in [
+            *b"text",
+            *b"\0e\xcc\x81",
+            *b"ok\xff\0",
+            *b"ok\xe2\x82",
+            *b"\xc0\x80\0\0",
+            *b"\xed\xa0\x80\0",
+        ] {
+            for storage in [Cow::Borrowed(&input), Cow::<'_, [u8; 4]>::Owned(input)] {
+                assert_eq!(StringBytes::as_bytes(&storage), input);
+                assert_stable_bytes(&storage);
+                assert_deref_matches_as_bytes(&storage);
+                assert_to_bytes_preserves_bytes(&storage);
+                let _ = assert_try_borrow_str_preserves_bytes(&storage);
+                let _ = assert_try_to_string_preserves_bytes(&storage);
+                assert_into_bytes_preserves_bytes(storage.clone());
+                let _ = assert_try_into_string_preserves_bytes(storage);
+            }
         }
 
-        for input in [b"".as_slice(), b"text", b"ok\xff"] {
-            check(input);
-            check(&Vec::from(input));
-            check(&Cow::Borrowed(input));
-            check(&Cow::<'_, [u8]>::Owned(Vec::from(input)));
-            #[cfg(feature = "bytes")]
-            {
-                check(&Bytes::from(Vec::from(input)));
-                check(&BytesMut::from(input));
+        for storage in [Cow::Borrowed(&[]), Cow::<'_, [u8; 0]>::Owned([])] {
+            assert_eq!(StringBytes::as_bytes(&storage), b"");
+            assert_stable_bytes(&storage);
+            assert_deref_matches_as_bytes(&storage);
+            assert_to_bytes_preserves_bytes(&storage);
+            let _ = assert_try_borrow_str_preserves_bytes(&storage);
+            let _ = assert_try_to_string_preserves_bytes(&storage);
+            assert_into_bytes_preserves_bytes(storage.clone());
+            let _ = assert_try_into_string_preserves_bytes(storage);
+        }
+    }
+
+    #[cfg(feature = "bytes")]
+    #[test]
+    fn bytes_guarantees() {
+        for input in INPUTS {
+            let original = Bytes::from([b"prefix".as_slice(), input].concat());
+            for storage in [
+                Bytes::from_static(input),
+                Bytes::from(input.to_vec()),
+                Bytes::from_owner(input.to_vec()),
+                original.slice(6..),
+            ] {
+                assert_eq!(StringBytes::as_bytes(&storage), input);
+                assert_stable_bytes(&storage);
+                assert_as_ref_matches_as_bytes(&storage);
+                assert_deref_matches_as_bytes(&storage);
+                assert_to_bytes_preserves_bytes(&storage);
+                let _ = assert_try_borrow_str_preserves_bytes(&storage);
+                let _ = assert_try_to_string_preserves_bytes(&storage);
+                assert_into_bytes_preserves_bytes(storage.clone());
+                let _ = assert_try_into_string_preserves_bytes(storage);
             }
         }
-        check(&[0_u8; 0]);
-        check(&[b'a', 0xff]);
-        for_each_sized_cow(|storage, _| check(storage));
+    }
+
+    #[cfg(feature = "bytes")]
+    #[test]
+    fn bytes_mut_guarantees() {
+        for input in INPUTS {
+            let mut original = BytesMut::from(input);
+            original.extend_from_slice(b"tail");
+            let prefix = original.split_to(input.len());
+            for mut storage in [BytesMut::from(input), prefix] {
+                assert_eq!(StringBytes::as_bytes(&storage), input);
+                assert_stable_bytes(&storage);
+                assert_as_ref_matches_as_bytes(&storage);
+                assert_deref_matches_as_bytes(&storage);
+                assert_to_bytes_preserves_bytes(&storage);
+                let _ = assert_try_borrow_str_preserves_bytes(&storage);
+                let _ = assert_try_to_string_preserves_bytes(&storage);
+                assert_into_bytes_preserves_bytes(storage.clone());
+                let _ = assert_try_into_string_preserves_bytes(storage.clone());
+                assert_as_mut_matches_as_bytes(&mut storage);
+            }
+            assert_eq!(&original[..], b"tail");
+            assert_deref_matches_as_bytes(&original);
+        }
     }
 
     #[test]
     fn into_bytes_reuses_owned_storage() {
-        check_owned_conversions(true);
+        for input in [
+            b"".as_slice(),
+            b"text",
+            "é说明".as_bytes(),
+            b"\0e\xcc\x81",
+            b"ok\xff",
+        ] {
+            let make_vec = || {
+                let mut bytes = Vec::with_capacity(input.len() + 32);
+                bytes.extend_from_slice(input);
+                bytes
+            };
+
+            let bytes = make_vec();
+            let address = bytes.as_ptr();
+            let capacity = bytes.capacity();
+            assert_into_bytes_reuses_allocation(bytes, input, address, capacity);
+
+            let bytes = make_vec();
+            let address = bytes.as_ptr();
+            let capacity = bytes.capacity();
+            assert_into_bytes_reuses_allocation(
+                Cow::<'_, [u8]>::Owned(bytes),
+                input,
+                address,
+                capacity,
+            );
+
+            let bytes = make_vec();
+            let address = bytes.as_ptr();
+            let capacity = bytes.capacity();
+            assert_into_bytes_reuses_allocation(
+                Cow::<'_, Vec<u8>>::Owned(bytes),
+                input,
+                address,
+                capacity,
+            );
+
+            #[cfg(feature = "bytes")]
+            {
+                let bytes = make_vec();
+                let address = bytes.as_ptr();
+                let capacity = bytes.capacity();
+                assert_into_bytes_reuses_allocation(Bytes::from(bytes), input, address, capacity);
+
+                let bytes = Box::<[u8]>::from(input);
+                let address = bytes.as_ptr();
+                assert_into_bytes_reuses_allocation(
+                    Bytes::from(bytes),
+                    input,
+                    address,
+                    input.len(),
+                );
+
+                let mut bytes = BytesMut::with_capacity(input.len() + 32);
+                bytes.extend_from_slice(input);
+                let address = bytes.as_ptr();
+                let capacity = bytes.capacity();
+                assert_into_bytes_reuses_allocation(bytes, input, address, capacity);
+
+                let mut bytes = BytesMut::with_capacity(input.len() + 32);
+                bytes.extend_from_slice(input);
+                let address = bytes.as_ptr();
+                let capacity = bytes.capacity();
+                assert_into_bytes_reuses_allocation(bytes.freeze(), input, address, capacity);
+            }
+        }
     }
 
     #[test]
@@ -424,7 +508,29 @@ mod tests {
     #[cfg(feature = "bytes")]
     #[test]
     fn into_bytes_reuses_sliced_allocations() {
-        check_sliced_allocation_reuse(true);
+        for input in [b"text".as_slice(), b"ok\xff"] {
+            // A slice's address differs from the allocation's original address.
+            let mut original = Vec::with_capacity(64);
+            original.extend_from_slice(b"prefix");
+            original.extend_from_slice(input);
+            let address = original.as_ptr();
+            let capacity = original.capacity();
+            let original = Bytes::from(original);
+            let slice = original.slice(6..);
+            assert_ne!(slice.as_ptr(), address);
+            drop(original);
+            assert_into_bytes_reuses_allocation(slice, input, address, capacity);
+
+            let mut original = BytesMut::with_capacity(64);
+            original.extend_from_slice(b"prefix");
+            original.extend_from_slice(input);
+            let address = original.as_ptr();
+            let capacity = original.capacity();
+            let prefix = original.split_to(6);
+            assert_ne!(original.as_ptr(), address);
+            drop(prefix);
+            assert_into_bytes_reuses_allocation(original, input, address, capacity);
+        }
     }
 
     #[cfg(feature = "bytes")]
@@ -434,208 +540,79 @@ mod tests {
     }
 
     #[test]
-    fn try_borrow_str_borrows_the_same_bytes() {
-        fn check<T: StringBytes + ?Sized>(storage: &T, expected: &str) {
-            let text = storage.try_borrow_str().unwrap();
-            assert_eq!(text, expected);
-            assert!(std::ptr::eq(text.as_bytes(), storage.as_bytes()));
-        }
-
-        for input in ["", "text", "é说明", "\0e\u{301}"] {
-            check(input.as_bytes(), input);
-            check(&Vec::from(input.as_bytes()), input);
-            check(&Box::<[u8]>::from(input.as_bytes()), input);
-            check(&Cow::Borrowed(input.as_bytes()), input);
-            check(&Cow::<'_, [u8]>::Owned(Vec::from(input.as_bytes())), input);
-
-            #[cfg(feature = "bytes")]
-            {
-                check(&Bytes::from_static(input.as_bytes()), input);
-                check(&BytesMut::from(input.as_bytes()), input);
-            }
-        }
-        check(&[0_u8; 0], "");
-        check(b"text", "text");
-        for_each_sized_cow(|storage, expected| {
-            if let Ok(text) = std::str::from_utf8(expected) {
-                check(storage, text);
-            }
-        });
-    }
-
-    #[test]
-    fn try_borrow_str_reports_invalid_utf8() {
-        fn check<T: StringBytes + ?Sized>(
-            storage: &T,
-            valid_up_to: usize,
-            error_len: Option<usize>,
-        ) {
-            let error = StringBytes::try_borrow_str(storage).unwrap_err();
-            assert_eq!(error.valid_up_to(), valid_up_to);
-            assert_eq!(error.error_len(), error_len);
-        }
-
-        // None denotes an incomplete sequence; all other errors have a length.
-        for (input, valid_up_to, error_len) in [
-            (b"\xff".as_slice(), 0, Some(1)),
-            (b"ok\xe2\x82", 2, None),
-            (b"\xc0\x80", 0, Some(1)),
-            (b"\xed\xa0\x80", 0, Some(1)),
-        ] {
-            check(input, valid_up_to, error_len);
-            check(&Vec::from(input), valid_up_to, error_len);
-            check(&Cow::Borrowed(input), valid_up_to, error_len);
-            check(
-                &Cow::<'_, [u8]>::Owned(Vec::from(input)),
-                valid_up_to,
-                error_len,
-            );
-            #[cfg(feature = "bytes")]
-            {
-                check(&Bytes::from_static(input), valid_up_to, error_len);
-                check(&BytesMut::from(input), valid_up_to, error_len);
-            }
-        }
-        check(&[0xff], 0, Some(1));
-        check(&[b'o', b'k', 0xe2, 0x82], 2, None);
-        for_each_sized_cow(|storage, expected| {
-            if let Err(error) = std::str::from_utf8(expected) {
-                check(storage, error.valid_up_to(), error.error_len());
-            }
-        });
-    }
-
-    #[test]
-    fn try_to_string_preserves_bytes_and_source() {
-        fn check<T: StringBytes>(storage: T) {
-            let expected = storage.as_bytes().to_vec();
-            let copied = storage.try_to_string().unwrap();
-            assert_eq!(copied.as_bytes(), expected);
-            assert_eq!(storage.as_bytes(), expected);
-
-            if !expected.is_empty() {
-                assert_ne!(copied.as_ptr(), storage.as_bytes().as_ptr());
-            }
-        }
-
-        // Include embedded NUL and decomposed Unicode to catch any normalization.
-        for input in ["", "text", "é说明", "\0e\u{301}"] {
-            check(input.as_bytes());
-            check(Vec::from(input.as_bytes()));
-            check(Box::<[u8]>::from(input.as_bytes()));
-            check(Cow::Borrowed(input.as_bytes()));
-            check(Cow::<'_, [u8]>::Owned(Vec::from(input.as_bytes())));
-
-            #[cfg(feature = "bytes")]
-            {
-                check(Bytes::from_static(input.as_bytes()));
-                check(BytesMut::from(input.as_bytes()));
-            }
-        }
-
-        check([0_u8; 0]);
-        check(*b"text");
-        check(Box::new(*b"text"));
-        for_each_sized_cow(|storage, expected| {
-            if std::str::from_utf8(expected).is_ok() {
-                check(storage);
-            }
-        });
-    }
-
-    #[test]
-    fn try_to_string_rejects_invalid_utf8() {
-        fn check<T: StringBytes>(storage: T) {
-            let expected = storage.as_bytes().to_vec();
-            let error = storage.try_to_string().unwrap_err();
-            assert_eq!(error.as_bytes(), expected);
-            assert_eq!(storage.as_bytes(), expected);
-            assert_ne!(error.as_bytes().as_ptr(), storage.as_bytes().as_ptr());
-        }
-
-        // Reject invalid, truncated, and overlong UTF-8 without lossy replacement.
-        for input in [b"\xff".as_slice(), b"\xe2\x82", b"\xc0\x80"] {
-            check(input);
-            check(Vec::from(input));
-            check(Box::<[u8]>::from(input));
-            check(Cow::Borrowed(input));
-            check(Cow::<'_, [u8]>::Owned(Vec::from(input)));
-
-            #[cfg(feature = "bytes")]
-            {
-                check(Bytes::from_static(input));
-                check(BytesMut::from(input));
-            }
-        }
-
-        check([0xff]);
-        check(Box::new([0xff]));
-        for_each_sized_cow(|storage, expected| {
-            if std::str::from_utf8(expected).is_err() {
-                check(storage);
-            }
-        });
-    }
-
-    #[test]
     fn try_into_string_reuses_owned_storage() {
-        check_owned_conversions(false);
-    }
+        for input in [
+            b"".as_slice(),
+            b"text",
+            "é说明".as_bytes(),
+            b"\0e\xcc\x81",
+            b"ok\xff",
+        ] {
+            let make_vec = || {
+                let mut bytes = Vec::with_capacity(input.len() + 32);
+                bytes.extend_from_slice(input);
+                bytes
+            };
 
-    #[test]
-    fn try_into_string_preserves_the_storage_bytes() {
-        fn check<T: StringBytes>(storage: T) {
-            // Check contents here; allocation reuse is tested separately.
-            let expected = storage.as_bytes().to_vec();
-            let converted = storage.try_into_string().unwrap();
-            assert_eq!(converted.as_bytes(), expected);
-        }
+            let bytes = make_vec();
+            let address = bytes.as_ptr();
+            let capacity = bytes.capacity();
+            assert_try_into_string_reuses_allocation(bytes, input, address, capacity);
 
-        // Include embedded NUL and decomposed Unicode to catch any normalization.
-        for input in ["", "text", "é说明", "\0e\u{301}"] {
-            check(input.as_bytes());
-            check(Vec::from(input.as_bytes()));
-            check(Box::<[u8]>::from(input.as_bytes()));
-            check(Cow::Borrowed(input.as_bytes()));
-            check(Cow::<'_, [u8]>::Owned(Vec::from(input.as_bytes())));
+            let bytes = make_vec();
+            let address = bytes.as_ptr();
+            let capacity = bytes.capacity();
+            assert_try_into_string_reuses_allocation(
+                Cow::<'_, [u8]>::Owned(bytes),
+                input,
+                address,
+                capacity,
+            );
 
-            #[cfg(feature = "bytes")]
-            {
-                check(Bytes::from_static(input.as_bytes()));
-                check(BytesMut::from(input.as_bytes()));
-            }
-        }
-
-        check([0_u8; 0]);
-        check(*b"text");
-        check(Box::new(*b"text"));
-    }
-
-    #[test]
-    fn try_into_string_rejects_invalid_utf8() {
-        fn check<T: StringBytes>(storage: T) {
-            let expected = storage.as_bytes().to_vec();
-            let error = storage.try_into_string().unwrap_err();
-            assert_eq!(error.as_bytes(), expected);
-        }
-
-        // Reject invalid, truncated, and overlong UTF-8 without lossy replacement.
-        for input in [b"\xff".as_slice(), b"\xe2\x82", b"\xc0\x80"] {
-            check(input);
-            check(Vec::from(input));
-            check(Box::<[u8]>::from(input));
-            check(Cow::Borrowed(input));
-            check(Cow::<'_, [u8]>::Owned(Vec::from(input)));
+            let bytes = make_vec();
+            let address = bytes.as_ptr();
+            let capacity = bytes.capacity();
+            assert_try_into_string_reuses_allocation(
+                Cow::<'_, Vec<u8>>::Owned(bytes),
+                input,
+                address,
+                capacity,
+            );
 
             #[cfg(feature = "bytes")]
             {
-                check(Bytes::from_static(input));
-                check(BytesMut::from(input));
+                let bytes = make_vec();
+                let address = bytes.as_ptr();
+                let capacity = bytes.capacity();
+                assert_try_into_string_reuses_allocation(
+                    Bytes::from(bytes),
+                    input,
+                    address,
+                    capacity,
+                );
+
+                let bytes = Box::<[u8]>::from(input);
+                let address = bytes.as_ptr();
+                assert_try_into_string_reuses_allocation(
+                    Bytes::from(bytes),
+                    input,
+                    address,
+                    input.len(),
+                );
+
+                let mut bytes = BytesMut::with_capacity(input.len() + 32);
+                bytes.extend_from_slice(input);
+                let address = bytes.as_ptr();
+                let capacity = bytes.capacity();
+                assert_try_into_string_reuses_allocation(bytes, input, address, capacity);
+
+                let mut bytes = BytesMut::with_capacity(input.len() + 32);
+                bytes.extend_from_slice(input);
+                let address = bytes.as_ptr();
+                let capacity = bytes.capacity();
+                assert_try_into_string_reuses_allocation(bytes.freeze(), input, address, capacity);
             }
         }
-
-        check([0xff]);
-        check(Box::new([0xff]));
     }
 
     #[test]
@@ -691,7 +668,29 @@ mod tests {
     #[cfg(feature = "bytes")]
     #[test]
     fn try_into_string_reuses_sliced_allocations() {
-        check_sliced_allocation_reuse(false);
+        for input in [b"text".as_slice(), b"ok\xff"] {
+            // A slice's address differs from the allocation's original address.
+            let mut original = Vec::with_capacity(64);
+            original.extend_from_slice(b"prefix");
+            original.extend_from_slice(input);
+            let address = original.as_ptr();
+            let capacity = original.capacity();
+            let original = Bytes::from(original);
+            let slice = original.slice(6..);
+            assert_ne!(slice.as_ptr(), address);
+            drop(original);
+            assert_try_into_string_reuses_allocation(slice, input, address, capacity);
+
+            let mut original = BytesMut::with_capacity(64);
+            original.extend_from_slice(b"prefix");
+            original.extend_from_slice(input);
+            let address = original.as_ptr();
+            let capacity = original.capacity();
+            let prefix = original.split_to(6);
+            assert_ne!(original.as_ptr(), address);
+            drop(prefix);
+            assert_try_into_string_reuses_allocation(original, input, address, capacity);
+        }
     }
 
     #[cfg(feature = "bytes")]
@@ -765,87 +764,5 @@ mod tests {
     #[test]
     fn box_into_string_copies_cow_arrays() {
         check_boxed_cow_array_conversions(false);
-    }
-
-    #[test]
-    fn as_mut_borrows_the_same_slice_as_as_bytes() {
-        fn check_mut<T: StringBytes + AsMut<[u8]> + ?Sized>(value: &mut T) {
-            let original = value.as_bytes();
-            let pointer = original.as_ptr();
-            // Wrapping addition also handles 0xff.
-            let expected: Vec<u8> = original.iter().map(|byte| byte.wrapping_add(1)).collect();
-            let mutable = value.as_mut();
-            assert_eq!(mutable.as_ptr(), pointer);
-            assert_eq!(mutable.len(), expected.len());
-            for byte in mutable {
-                *byte = byte.wrapping_add(1);
-            }
-            // as_bytes must see the changes made through AsMut.
-            assert_eq!(value.as_bytes(), expected);
-        }
-
-        for input in [b"".as_slice(), b"AC", b"A\xff"] {
-            let mut vector = Vec::from(input);
-            check_mut(vector.as_mut_slice()); // T = [u8].
-            check_mut(&mut vector); // T = Vec<u8>.
-
-            #[cfg(feature = "bytes")]
-            check_mut(&mut BytesMut::from(input));
-        }
-
-        check_mut(&mut [0_u8; 0]);
-        check_mut(&mut [0xff_u8; 64]);
-    }
-
-    #[test]
-    fn deref_target_implements_string_bytes_and_borrows_the_same_slice() {
-        fn check<T>(storage: &T, expected: &[u8])
-        where
-            T: StringBytes + Deref + ?Sized,
-            T::Target: StringBytes,
-        {
-            // The bound checks the target type; pointer equality checks both
-            // the address and length of the byte views.
-            for _ in 0..3 {
-                let bytes = StringBytes::as_bytes(storage);
-                let target_bytes = StringBytes::as_bytes(T::deref(storage));
-                assert!(std::ptr::eq(bytes, target_bytes));
-                assert_eq!(target_bytes, expected);
-            }
-        }
-
-        for input in [b"".as_slice(), b"text", b"\0e\xcc\x81", b"ok\xff"] {
-            check(&Vec::from(input), input);
-            check(&Cow::Borrowed(input), input);
-            check(&Cow::<'_, [u8]>::Owned(Vec::from(input)), input);
-            check(&Cow::Borrowed(&Vec::from(input)), input);
-            check(&Cow::<'_, Vec<u8>>::Owned(Vec::from(input)), input);
-
-            #[cfg(feature = "bytes")]
-            {
-                check(&Bytes::from_static(input), input);
-                check(&Bytes::from(Vec::from(input)), input);
-                check(&Bytes::from_owner(Vec::from(input)), input);
-
-                let expected = [b"prefix".as_slice(), input].concat();
-                let bytes = Bytes::from(expected.clone());
-                let slice = bytes.slice(6..);
-                check(&bytes, &expected);
-                check(&slice, input);
-
-                let mut bytes = BytesMut::from(input);
-                check(&bytes, input);
-                bytes.extend_from_slice(b"tail");
-                let prefix = bytes.split_to(input.len());
-                check(&prefix, input);
-                check(&bytes, b"tail");
-            }
-        }
-        check(&Cow::Borrowed(&[]), b"");
-        check(&Cow::<'_, [u8; 0]>::Owned([]), b"");
-        for input in [*b"text", *b"ok\xff\0"] {
-            check(&Cow::Borrowed(&input), &input);
-            check(&Cow::<'_, [u8; 4]>::Owned(input), &input);
-        }
     }
 }

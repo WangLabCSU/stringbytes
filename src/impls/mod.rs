@@ -82,30 +82,3 @@ macro_rules! impl_string_bytes {
 // Import shared macros explicitly so child module order does not matter.
 use impl_pointer_conversions_for_sized;
 use impl_string_bytes;
-
-#[cfg(test)]
-mod test_support {
-    use crate::StringBytes;
-
-    pub(super) fn assert_reuses_allocation<T: StringBytes>(
-        storage: T,
-        expected: &[u8],
-        address: *const u8,
-        capacity: usize,
-        into_bytes: bool,
-    ) {
-        let bytes = if into_bytes {
-            storage.into_bytes()
-        } else {
-            let result = storage.try_into_string();
-            if std::str::from_utf8(expected).is_ok() {
-                result.unwrap().into_bytes()
-            } else {
-                result.unwrap_err().into_bytes()
-            }
-        };
-        assert_eq!(bytes, expected);
-        assert_eq!(bytes.as_ptr(), address);
-        assert_eq!(bytes.capacity(), capacity);
-    }
-}
