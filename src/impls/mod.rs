@@ -1,8 +1,6 @@
 mod bytes;
-mod c_str;
-mod io;
 mod pointer;
-mod string;
+mod str;
 
 // Sized contents can delegate conversions to the inner value. Boxed arrays
 // instead transfer their own allocation.
