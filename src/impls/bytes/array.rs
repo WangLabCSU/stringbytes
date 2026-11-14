@@ -1,19 +1,17 @@
-use std::rc::Rc;
-use std::string::FromUtf8Error;
-use std::sync::Arc;
-
-use crate::impls::{impl_pointer_conversions_for_sized, impl_string_bytes};
+use crate::impls::impl_string_bytes;
 use crate::{sealed, StringBytes};
 
-// Arrays store bytes inline, but boxed arrays can give their allocation to
-// the resulting vector or string.
+// Rc and Arc store the array alongside reference counts, so their allocations
+// cannot back a Vec. try_unwrap can move all N bytes to a stack temporary before
+// copying them into the result, adding a copy and risking stack overflow for
+// large N. Keep the copying defaults to copy directly from the array in place.
 impl_string_bytes!(
     /// Exposes all bytes of the array.
     ///
     /// Converting the array itself into a [`Vec<u8>`] or [`String`] copies its
     /// bytes. [`Box<[u8; N]>`](Box) reuses its allocation for
-    /// [`into_bytes`](StringBytes::into_bytes); [`Rc`] and
-    /// [`Arc`] copy the stored array's bytes.
+    /// [`into_bytes`](StringBytes::into_bytes); [`Rc`](std::rc::Rc) and
+    /// [`Arc`](std::sync::Arc) copy the stored array's bytes.
     ///
     /// Checked and lossy string conversions validate UTF-8.
     [const N: usize]; [u8; N] {
@@ -23,13 +21,12 @@ impl_string_bytes!(
             self
         }
 
-        impl_pointer_conversions_for_sized! {
-            /// Converts the boxed array into a vector, reusing its allocation.
-            #[inline]
-            fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
-                // Passing self as an argument lets Box<[u8; N]> coerce to Box<[u8]>.
-                <[u8]>::into_vec(self)
-            }
+        /// Converts the boxed array into a vector, reusing its allocation.
+        #[inline]
+        fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
+            // Coercing to Box<[u8]> preserves the allocation's layout, so
+            // into_vec can take it over without moving the array onto the stack.
+            <[u8]>::into_vec(self)
         }
     }
 );
@@ -37,8 +34,15 @@ impl_string_bytes!(
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::thread;
 
     use crate::StringBytes;
+
+    // Native stack regressions need an array larger than the 64 KiB worker
+    // stack. Under Miri, smaller inputs suffice to check the same conversions.
+    const LARGE_ARRAY_LEN: usize = if cfg!(miri) { 32 } else { 128 * 1024 };
 
     #[test]
     fn as_bytes_array_exposes_stable_contents() {
@@ -418,6 +422,44 @@ mod tests {
     }
 
     #[test]
+    fn rc_into_bytes_large_array_on_small_stack() {
+        // Allocate on the heap before entering the small worker stack.
+        let storage: Box<[u8; LARGE_ARRAY_LEN]> = vec![0xff; LARGE_ARRAY_LEN]
+            .into_boxed_slice()
+            .try_into()
+            .unwrap();
+        let value = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let storage: Rc<[u8; LARGE_ARRAY_LEN]> = Rc::from(storage);
+                StringBytes::rc_into_bytes(storage)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value, vec![0xff; LARGE_ARRAY_LEN]);
+    }
+
+    #[test]
+    fn arc_into_bytes_large_array_on_small_stack() {
+        // Allocate on the heap before entering the small worker stack.
+        let storage: Box<[u8; LARGE_ARRAY_LEN]> = vec![0xff; LARGE_ARRAY_LEN]
+            .into_boxed_slice()
+            .try_into()
+            .unwrap();
+        let value = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let storage: Arc<[u8; LARGE_ARRAY_LEN]> = Arc::from(storage);
+                StringBytes::arc_into_bytes(storage)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value, vec![0xff; LARGE_ARRAY_LEN]);
+    }
+
+    #[test]
     fn box_into_string_array_reuses_allocation() {
         let storage = Box::new(*b"text");
         let address = StringBytes::as_bytes(&storage).as_ptr();
@@ -453,5 +495,61 @@ mod tests {
         let value = StringBytes::box_into_string(storage).unwrap();
         assert_eq!(value, "");
         assert_eq!(value.capacity(), capacity);
+    }
+
+    #[test]
+    fn rc_into_string_large_array_on_small_stack() {
+        // Allocate on the heap before entering the small worker stack.
+        let storage: Box<[u8; LARGE_ARRAY_LEN]> = vec![b'a'; LARGE_ARRAY_LEN]
+            .into_boxed_slice()
+            .try_into()
+            .unwrap();
+        let value = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let storage: Rc<[u8; LARGE_ARRAY_LEN]> = Rc::from(storage);
+                StringBytes::rc_into_string(storage).unwrap()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value, "a".repeat(LARGE_ARRAY_LEN));
+    }
+
+    #[test]
+    fn rc_into_string_array_returns_invalid_bytes() {
+        let storage: Rc<[u8; 3]> = Rc::new(*b"ok\xff");
+        let error = StringBytes::rc_into_string(storage).unwrap_err();
+        assert_eq!(error.utf8_error().valid_up_to(), 2);
+        assert_eq!(error.utf8_error().error_len(), Some(1));
+        assert_eq!(error.into_bytes(), b"ok\xff");
+    }
+
+    #[test]
+    fn arc_into_string_large_array_on_small_stack() {
+        // Allocate on the heap before entering the small worker stack.
+        let storage: Box<[u8; LARGE_ARRAY_LEN]> = vec![b'a'; LARGE_ARRAY_LEN]
+            .into_boxed_slice()
+            .try_into()
+            .unwrap();
+        let value = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let storage: Arc<[u8; LARGE_ARRAY_LEN]> = Arc::from(storage);
+                StringBytes::arc_into_string(storage).unwrap()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value, "a".repeat(LARGE_ARRAY_LEN));
+    }
+
+    #[test]
+    fn arc_into_string_array_returns_invalid_bytes() {
+        let storage: Arc<[u8; 3]> = Arc::new(*b"ok\xff");
+        let error = StringBytes::arc_into_string(storage).unwrap_err();
+        assert_eq!(error.utf8_error().valid_up_to(), 2);
+        assert_eq!(error.utf8_error().error_len(), Some(1));
+        assert_eq!(error.into_bytes(), b"ok\xff");
     }
 }

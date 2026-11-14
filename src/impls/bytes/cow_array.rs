@@ -1,18 +1,19 @@
 use std::borrow::Cow;
-use std::rc::Rc;
-use std::string::FromUtf8Error;
-use std::sync::Arc;
 
-use crate::impls::{impl_pointer_conversions_for_sized, impl_string_bytes};
+use crate::impls::impl_string_bytes;
 use crate::{sealed, StringBytes};
 
-// Neither variant owns a transferable allocation; copy directly from the
-// array without first cloning it through Cow::into_owned.
+// Cow::Owned stores the array inline; Cow::Borrowed owns no buffer. Neither can
+// transfer an allocation to Vec, even through Box, Rc, or Arc. The sized-pointer
+// helpers can move the enum onto the stack before copying its bytes. This can
+// require space for the entire owned array even when the variant is Borrowed.
+// Keep the copying defaults to read the current view in place, avoiding extra
+// moves and stack overflow for large N.
 impl_string_bytes!(
     /// Exposes the bytes of the borrowed or owned array.
     ///
     /// Both variants copy when an owned result is needed, including through
-    /// [`Box`], [`Rc`], and [`Arc`]. The owned
+    /// [`Box`], [`Rc`](std::rc::Rc), and [`Arc`](std::sync::Arc). The owned
     /// array is stored inline and has no separate buffer to transfer.
     ///
     /// Checked and lossy string conversions validate UTF-8.
@@ -22,24 +23,21 @@ impl_string_bytes!(
         fn as_bytes(&self) -> &[u8] {
             self.as_ref()
         }
-
-        impl_pointer_conversions_for_sized! {
-            /// Copies the array's bytes out of the box.
-            #[inline]
-            fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
-                // An owned array is part of the Cow enum, whose allocation cannot
-                // be transferred to Vec. Copy without first moving the Cow out.
-                (*self).to_bytes()
-            }
-        }
     }
 );
 
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::thread;
 
     use crate::StringBytes;
+
+    // Native stack regressions need an array larger than the 64 KiB worker
+    // stack. Under Miri, smaller inputs suffice to check the same conversions.
+    const LARGE_ARRAY_LEN: usize = if cfg!(miri) { 32 } else { 128 * 1024 };
 
     #[test]
     fn as_bytes_cow_array_borrowed_exposes_stable_contents() {
@@ -763,6 +761,74 @@ mod tests {
     }
 
     #[test]
+    fn rc_into_bytes_large_borrowed_cow_array_on_small_stack() {
+        static SOURCE: [u8; LARGE_ARRAY_LEN] = [0xff; LARGE_ARRAY_LEN];
+        // Construct the large enum outside the small worker stack.
+        let storage: Box<Cow<'static, [u8; LARGE_ARRAY_LEN]>> = Box::new(Cow::Borrowed(&SOURCE));
+        let value = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let storage: Rc<Cow<'static, [u8; LARGE_ARRAY_LEN]>> = Rc::from(storage);
+                StringBytes::rc_into_bytes(storage)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value, vec![0xff; LARGE_ARRAY_LEN]);
+    }
+
+    #[test]
+    fn rc_into_bytes_large_owned_cow_array_on_small_stack() {
+        // Construct the large enum outside the small worker stack.
+        let storage: Box<Cow<'static, [u8; LARGE_ARRAY_LEN]>> =
+            Box::new(Cow::Owned([0xff; LARGE_ARRAY_LEN]));
+        let value = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let storage: Rc<Cow<'static, [u8; LARGE_ARRAY_LEN]>> = Rc::from(storage);
+                StringBytes::rc_into_bytes(storage)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value, vec![0xff; LARGE_ARRAY_LEN]);
+    }
+
+    #[test]
+    fn arc_into_bytes_large_borrowed_cow_array_on_small_stack() {
+        static SOURCE: [u8; LARGE_ARRAY_LEN] = [0xff; LARGE_ARRAY_LEN];
+        // Construct the large enum outside the small worker stack.
+        let storage: Box<Cow<'static, [u8; LARGE_ARRAY_LEN]>> = Box::new(Cow::Borrowed(&SOURCE));
+        let value = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let storage: Arc<Cow<'static, [u8; LARGE_ARRAY_LEN]>> = Arc::from(storage);
+                StringBytes::arc_into_bytes(storage)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value, vec![0xff; LARGE_ARRAY_LEN]);
+    }
+
+    #[test]
+    fn arc_into_bytes_large_owned_cow_array_on_small_stack() {
+        // Construct the large enum outside the small worker stack.
+        let storage: Box<Cow<'static, [u8; LARGE_ARRAY_LEN]>> =
+            Box::new(Cow::Owned([0xff; LARGE_ARRAY_LEN]));
+        let value = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let storage: Arc<Cow<'static, [u8; LARGE_ARRAY_LEN]>> = Arc::from(storage);
+                StringBytes::arc_into_bytes(storage)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value, vec![0xff; LARGE_ARRAY_LEN]);
+    }
+
+    #[test]
     fn box_into_string_borrowed_cow_array_copies() {
         let source = *b"text";
         let storage = Box::new(Cow::<'_, [u8; 4]>::Borrowed(&source));
@@ -806,5 +872,111 @@ mod tests {
         let value = error.into_bytes();
         assert_eq!(value, b"ok\xff");
         assert_ne!(value.as_ptr(), address);
+    }
+
+    #[test]
+    fn rc_into_string_large_borrowed_cow_array_on_small_stack() {
+        static SOURCE: [u8; LARGE_ARRAY_LEN] = [b'a'; LARGE_ARRAY_LEN];
+        // Construct the large enum outside the small worker stack.
+        let storage: Box<Cow<'static, [u8; LARGE_ARRAY_LEN]>> = Box::new(Cow::Borrowed(&SOURCE));
+        let value = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let storage: Rc<Cow<'static, [u8; LARGE_ARRAY_LEN]>> = Rc::from(storage);
+                StringBytes::rc_into_string(storage).unwrap()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value, "a".repeat(LARGE_ARRAY_LEN));
+    }
+
+    #[test]
+    fn rc_into_string_borrowed_cow_array_returns_invalid_bytes() {
+        let source = *b"ok\xff";
+        let storage: Rc<Cow<'_, [u8; 3]>> = Rc::new(Cow::Borrowed(&source));
+        let error = StringBytes::rc_into_string(storage).unwrap_err();
+        assert_eq!(error.utf8_error().valid_up_to(), 2);
+        assert_eq!(error.utf8_error().error_len(), Some(1));
+        assert_eq!(error.into_bytes(), b"ok\xff");
+    }
+
+    #[test]
+    fn rc_into_string_large_owned_cow_array_on_small_stack() {
+        // Construct the large enum outside the small worker stack.
+        let storage: Box<Cow<'static, [u8; LARGE_ARRAY_LEN]>> =
+            Box::new(Cow::Owned([b'a'; LARGE_ARRAY_LEN]));
+        let value = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let storage: Rc<Cow<'static, [u8; LARGE_ARRAY_LEN]>> = Rc::from(storage);
+                StringBytes::rc_into_string(storage).unwrap()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value, "a".repeat(LARGE_ARRAY_LEN));
+    }
+
+    #[test]
+    fn rc_into_string_owned_cow_array_returns_invalid_bytes() {
+        let storage: Rc<Cow<'_, [u8; 3]>> = Rc::new(Cow::Owned(*b"ok\xff"));
+        let error = StringBytes::rc_into_string(storage).unwrap_err();
+        assert_eq!(error.utf8_error().valid_up_to(), 2);
+        assert_eq!(error.utf8_error().error_len(), Some(1));
+        assert_eq!(error.into_bytes(), b"ok\xff");
+    }
+
+    #[test]
+    fn arc_into_string_large_borrowed_cow_array_on_small_stack() {
+        static SOURCE: [u8; LARGE_ARRAY_LEN] = [b'a'; LARGE_ARRAY_LEN];
+        // Construct the large enum outside the small worker stack.
+        let storage: Box<Cow<'static, [u8; LARGE_ARRAY_LEN]>> = Box::new(Cow::Borrowed(&SOURCE));
+        let value = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let storage: Arc<Cow<'static, [u8; LARGE_ARRAY_LEN]>> = Arc::from(storage);
+                StringBytes::arc_into_string(storage).unwrap()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value, "a".repeat(LARGE_ARRAY_LEN));
+    }
+
+    #[test]
+    fn arc_into_string_borrowed_cow_array_returns_invalid_bytes() {
+        let source = *b"ok\xff";
+        let storage: Arc<Cow<'_, [u8; 3]>> = Arc::new(Cow::Borrowed(&source));
+        let error = StringBytes::arc_into_string(storage).unwrap_err();
+        assert_eq!(error.utf8_error().valid_up_to(), 2);
+        assert_eq!(error.utf8_error().error_len(), Some(1));
+        assert_eq!(error.into_bytes(), b"ok\xff");
+    }
+
+    #[test]
+    fn arc_into_string_large_owned_cow_array_on_small_stack() {
+        // Construct the large enum outside the small worker stack.
+        let storage: Box<Cow<'static, [u8; LARGE_ARRAY_LEN]>> =
+            Box::new(Cow::Owned([b'a'; LARGE_ARRAY_LEN]));
+        let value = thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                let storage: Arc<Cow<'static, [u8; LARGE_ARRAY_LEN]>> = Arc::from(storage);
+                StringBytes::arc_into_string(storage).unwrap()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(value, "a".repeat(LARGE_ARRAY_LEN));
+    }
+
+    #[test]
+    fn arc_into_string_owned_cow_array_returns_invalid_bytes() {
+        let storage: Arc<Cow<'_, [u8; 3]>> = Arc::new(Cow::Owned(*b"ok\xff"));
+        let error = StringBytes::arc_into_string(storage).unwrap_err();
+        assert_eq!(error.utf8_error().valid_up_to(), 2);
+        assert_eq!(error.utf8_error().error_len(), Some(1));
+        assert_eq!(error.into_bytes(), b"ok\xff");
     }
 }
