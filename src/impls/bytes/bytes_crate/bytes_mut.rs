@@ -1,5 +1,4 @@
 use std::rc::Rc;
-use std::string::FromUtf8Error;
 use std::sync::Arc;
 
 use ::bytes::BytesMut;
@@ -280,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn try_to_string_bytes_mut_returns_a_copy_of_invalid_bytes() {
+    fn try_to_string_bytes_mut_reports_invalid_utf8_without_changing_storage() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -290,13 +289,8 @@ mod tests {
             let mut storage = BytesMut::with_capacity(input.len() + 32);
             storage.extend_from_slice(input);
             let error = StringBytes::try_to_string(&storage).unwrap_err();
-            assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
-            assert_eq!(error.utf8_error().error_len(), error_len);
-            assert_eq!(error.as_bytes(), input);
-            assert_ne!(
-                error.as_bytes().as_ptr(),
-                StringBytes::as_bytes(&storage).as_ptr()
-            );
+            assert_eq!(error.valid_up_to(), valid_up_to);
+            assert_eq!(error.error_len(), error_len);
             assert_eq!(StringBytes::as_bytes(&storage), input);
         }
     }
@@ -372,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn try_into_string_bytes_mut_error_reuses_buffer() {
+    fn try_into_string_bytes_mut_error_keeps_buffer() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -386,11 +380,11 @@ mod tests {
             let error = StringBytes::try_into_string(storage).unwrap_err();
             assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
             assert_eq!(error.utf8_error().error_len(), error_len);
-            let bytes = error.into_bytes();
-            assert_eq!(bytes, input);
+            let bytes = error.into_inner();
+            assert_eq!(StringBytes::as_bytes(&bytes), input);
             assert_eq!(bytes.capacity(), capacity);
             if capacity != 0 {
-                assert_eq!(bytes.as_ptr(), address);
+                assert_eq!(StringBytes::as_bytes(&bytes).as_ptr(), address);
             }
         }
     }
@@ -434,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn try_into_string_split_bytes_mut_error_copies() {
+    fn try_into_string_split_bytes_mut_error_returns_original() {
         let mut owner = BytesMut::from(b"ok\xff".as_slice());
         owner.extend_from_slice(b"tail");
         let storage = owner.split_to(b"ok\xff".len());
@@ -442,29 +436,30 @@ mod tests {
         let error = StringBytes::try_into_string(storage).unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 2);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        let value = error.into_bytes();
-        assert_eq!(value, b"ok\xff");
-        assert_ne!(value.as_ptr(), address);
+        let value = error.into_inner();
+        assert_eq!(StringBytes::as_bytes(&value), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&value).as_ptr(), address);
         assert_eq!(&owner[..], b"tail");
     }
 
     #[test]
-    fn try_into_string_bytes_mut_error_compacts_unique_slice_into_original_allocation() {
+    fn try_into_string_bytes_mut_error_preserves_slice_offset() {
         let mut original = BytesMut::with_capacity(64);
         original.extend_from_slice(b"prefix");
         original.extend_from_slice(b"ok\xff");
         let address = original.as_ptr();
-        let capacity = original.capacity();
         let prefix = original.split_to(6);
         let storage = original;
         assert_ne!(storage.as_ptr(), address);
         drop(prefix);
+        let address = storage.as_ptr();
+        let capacity = storage.capacity();
         let error = StringBytes::try_into_string(storage).unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 2);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        let value = error.into_bytes();
-        assert_eq!(value, b"ok\xff");
-        assert_eq!(value.as_ptr(), address);
+        let value = error.into_inner();
+        assert_eq!(StringBytes::as_bytes(&value), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&value).as_ptr(), address);
         assert_eq!(value.capacity(), capacity);
     }
 

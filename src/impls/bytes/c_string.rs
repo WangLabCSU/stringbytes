@@ -1,6 +1,5 @@
 use std::ffi::CString;
 use std::rc::Rc;
-use std::string::FromUtf8Error;
 use std::sync::Arc;
 
 use crate::impls::{impl_pointer_conversions_for_sized, impl_string_bytes};
@@ -11,11 +10,12 @@ impl_string_bytes!(
     ///
     /// [`into_bytes`](StringBytes::into_bytes) removes the terminator and
     /// transfers the allocation to the vector. [`try_into_string`](StringBytes::try_into_string)
-    /// validates UTF-8 and keeps that allocation, including in an error.
-    /// The terminator is excluded from both successful results and error bytes.
+    /// validates UTF-8 and reuses that allocation on success. On failure, the
+    /// error retains the original [`CString`], including its trailing NUL.
+    /// The error's byte view excludes the terminator, just like [`CString::as_bytes`].
     ///
-    /// C strings need not contain valid UTF-8. Borrowing, copying, and lossy
-    /// string conversions validate their contents.
+    /// C strings need not contain valid UTF-8. Checked and lossy string
+    /// conversions validate their contents.
     CString {
         /// Returns the bytes without the trailing NUL, as in [`CString::as_bytes`].
         #[inline]
@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn try_to_string_c_string_returns_a_copy_of_invalid_bytes() {
+    fn try_to_string_c_string_reports_invalid_utf8_without_changing_storage() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -201,13 +201,8 @@ mod tests {
         ] {
             let storage = CString::new(input).unwrap();
             let error = StringBytes::try_to_string(&storage).unwrap_err();
-            assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
-            assert_eq!(error.utf8_error().error_len(), error_len);
-            assert_eq!(error.as_bytes(), input);
-            assert_ne!(
-                error.as_bytes().as_ptr(),
-                StringBytes::as_bytes(&storage).as_ptr()
-            );
+            assert_eq!(error.valid_up_to(), valid_up_to);
+            assert_eq!(error.error_len(), error_len);
             assert_eq!(StringBytes::as_bytes(&storage), input);
         }
     }
@@ -279,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn try_into_string_c_string_error_reuses_buffer() {
+    fn try_into_string_c_string_error_keeps_buffer() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -288,16 +283,19 @@ mod tests {
         ] {
             let storage = CString::new(input).unwrap();
             let address = StringBytes::as_bytes(&storage).as_ptr();
-            let capacity = storage.as_bytes_with_nul().len();
+
             let error = StringBytes::try_into_string(storage).unwrap_err();
             assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
             assert_eq!(error.utf8_error().error_len(), error_len);
-            let bytes = error.into_bytes();
-            assert_eq!(bytes, input);
-            assert_eq!(bytes.capacity(), capacity);
-            if capacity != 0 {
-                assert_eq!(bytes.as_ptr(), address);
-            }
+            let bytes = error.into_inner();
+            assert_eq!(bytes.as_bytes_with_nul().last(), Some(&0));
+            assert_eq!(
+                bytes.as_bytes_with_nul().len(),
+                StringBytes::as_bytes(&bytes).len() + 1
+            );
+            assert_eq!(StringBytes::as_bytes(&bytes), input);
+
+            assert_eq!(StringBytes::as_bytes(&bytes).as_ptr(), address);
         }
     }
 

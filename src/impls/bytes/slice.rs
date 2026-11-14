@@ -171,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn try_to_string_slice_returns_a_copy_of_invalid_bytes() {
+    fn try_to_string_slice_reports_invalid_utf8_without_changing_storage() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -180,13 +180,8 @@ mod tests {
         ] {
             let storage: &[u8] = input;
             let error = StringBytes::try_to_string(storage).unwrap_err();
-            assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
-            assert_eq!(error.utf8_error().error_len(), error_len);
-            assert_eq!(error.as_bytes(), input);
-            assert_ne!(
-                error.as_bytes().as_ptr(),
-                StringBytes::as_bytes(storage).as_ptr()
-            );
+            assert_eq!(error.valid_up_to(), valid_up_to);
+            assert_eq!(error.error_len(), error_len);
             assert_eq!(StringBytes::as_bytes(storage), input);
         }
     }
@@ -277,15 +272,12 @@ mod tests {
     fn box_into_string_slice_error_keeps_allocation() {
         let storage = Box::<[u8]>::from(b"ok\xff".as_slice());
         let address = StringBytes::as_bytes(&storage).as_ptr();
-        let capacity = 3;
+
         let error = StringBytes::box_into_string(storage).unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 2);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        let value = error.into_bytes();
-        assert_eq!(value, b"ok\xff");
-        if capacity != 0 {
-            assert_eq!(value.as_ptr(), address);
-        }
-        assert_eq!(value.capacity(), capacity);
+        let value = error.into_inner();
+        assert_eq!(StringBytes::as_bytes(&value), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&value).as_ptr(), address);
     }
 }

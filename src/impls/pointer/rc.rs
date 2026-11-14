@@ -1,19 +1,19 @@
 use std::borrow::Cow;
 use std::rc::Rc;
-use std::str::Utf8Error;
-use std::string::FromUtf8Error;
 use std::sync::Arc;
 
 use crate::impls::impl_pointer_conversions_for_sized;
 use crate::impls::pointer::impl_string_bytes_for_pointer;
-use crate::{sealed, StringBytes};
+use crate::{sealed, FromUtf8Error, StringBytes, Utf8Error};
 
 impl_string_bytes_for_pointer!(
     /// Borrows the shared value's bytes and delegates string conversions to `T`.
     ///
-    /// Consuming conversions reuse an inner buffer when there is only one
-    /// strong owner and `T` can transfer that buffer. Additional strong owners
-    /// require a copy; [`Weak`](std::rc::Weak) pointers do not prevent reuse.
+    /// [`into_bytes`](StringBytes::into_bytes) and successful
+    /// [`try_into_string`](StringBytes::try_into_string) calls reuse an inner
+    /// buffer when there is only one strong owner and `T` can transfer it.
+    /// Additional strong owners require a copy; [`Weak`](std::rc::Weak) pointers
+    /// do not prevent reuse.
     /// Inline and unsized contents are copied.
     ///
     /// UTF-8 validation follows `T`'s string conversions.
@@ -23,16 +23,59 @@ impl_string_bytes_for_pointer!(
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
+    use std::cell::RefCell;
     use std::ffi::CStr;
     use std::io::IoSlice;
     use std::io::IoSliceMut;
     use std::rc::Rc;
     use std::sync::Arc;
 
-    use crate::impls::pointer::fixtures::{
-        CheckedTextOverrides, LossyTextOverride, NoIntermediateCopy, NoPrevalidation,
-    };
+    use crate::impls::impl_pointer_conversions_for_sized;
     use crate::StringBytes;
+
+    // Records dispatch only; each test asserts its own expected calls.
+    struct RecordingStorage<'a> {
+        bytes: &'a [u8],
+        calls: &'a RefCell<Vec<&'static str>>,
+    }
+
+    impl crate::sealed::Sealed for RecordingStorage<'_> {}
+
+    impl StringBytes for RecordingStorage<'_> {
+        fn as_bytes(&self) -> &[u8] {
+            self.calls.borrow_mut().push("as_bytes");
+            self.bytes
+        }
+
+        fn to_bytes(&self) -> Vec<u8> {
+            self.calls.borrow_mut().push("to_bytes");
+            self.bytes.to_vec()
+        }
+
+        fn into_bytes(self) -> Vec<u8> {
+            self.calls.borrow_mut().push("into_bytes");
+            self.bytes.to_vec()
+        }
+
+        fn try_borrow_str(&self) -> Result<&str, crate::Utf8Error> {
+            self.calls.borrow_mut().push("try_borrow_str");
+            std::str::from_utf8(self.bytes).map_err(crate::Utf8Error::from)
+        }
+
+        fn try_to_string(&self) -> Result<String, crate::Utf8Error> {
+            self.calls.borrow_mut().push("try_to_string");
+            std::str::from_utf8(self.bytes)
+                .map(str::to_owned)
+                .map_err(crate::Utf8Error::from)
+        }
+
+        fn to_string_lossy(&self) -> Cow<'_, str> {
+            self.calls.borrow_mut().push("to_string_lossy");
+            String::from_utf8_lossy(self.bytes)
+        }
+
+        impl_pointer_conversions_for_sized!();
+    }
 
     #[test]
     fn as_bytes_rc_vec_exposes_stable_contents() {
@@ -303,31 +346,63 @@ mod tests {
 
     #[test]
     fn try_borrow_str_rc_forwards_text_override() {
-        let storage = Rc::new(CheckedTextOverrides("étext"));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let storage = Rc::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
         let value = StringBytes::try_borrow_str(&storage).unwrap();
+        assert_eq!(*calls.borrow(), ["try_borrow_str"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
     fn try_borrow_str_shared_rc_forwards_text_override() {
-        let owner = Rc::new(CheckedTextOverrides("étext"));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let owner = Rc::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
         let storage = Rc::clone(&owner);
         let value = StringBytes::try_borrow_str(&storage).unwrap();
+        assert_eq!(*calls.borrow(), ["try_borrow_str"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "This test exercises Arc on one thread; its call log need not be Sync."
+    )]
     fn try_borrow_str_nested_forwards_text_override() {
-        let storage = Rc::new(Arc::new(Box::new(CheckedTextOverrides("étext"))));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let storage = Rc::new(Arc::new(Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        })));
         let value = StringBytes::try_borrow_str(&storage).unwrap();
+        assert_eq!(*calls.borrow(), ["try_borrow_str"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "This test exercises Arc on one thread; its call log need not be Sync."
+    )]
     fn try_borrow_str_shared_nested_forwards_text_override() {
-        let owner = Rc::new(Arc::new(Box::new(CheckedTextOverrides("étext"))));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let owner = Rc::new(Arc::new(Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        })));
         let storage = Rc::clone(&owner);
         let value = StringBytes::try_borrow_str(&storage).unwrap();
+        assert_eq!(*calls.borrow(), ["try_borrow_str"]);
         assert_eq!(value, "étext");
     }
 
@@ -366,7 +441,7 @@ mod tests {
     }
 
     #[test]
-    fn try_to_string_rc_vec_returns_a_copy_of_invalid_bytes() {
+    fn try_to_string_rc_vec_reports_invalid_utf8_without_changing_storage() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -377,71 +452,72 @@ mod tests {
             source.extend_from_slice(input);
             let storage = Rc::new(source);
             let error = StringBytes::try_to_string(&storage).unwrap_err();
-            assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
-            assert_eq!(error.utf8_error().error_len(), error_len);
-            assert_eq!(error.as_bytes(), input);
-            assert_ne!(
-                error.as_bytes().as_ptr(),
-                StringBytes::as_bytes(&storage).as_ptr()
-            );
+            assert_eq!(error.valid_up_to(), valid_up_to);
+            assert_eq!(error.error_len(), error_len);
             assert_eq!(StringBytes::as_bytes(&storage), input);
         }
     }
 
     #[test]
-    fn try_to_string_rc_forwards_text_override() {
-        let storage = Rc::new(CheckedTextOverrides("étext"));
+    fn try_to_string_rc_calls_only_inner_override() {
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let storage = Rc::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
         let value = StringBytes::try_to_string(&storage).unwrap();
+        assert_eq!(*calls.borrow(), ["try_to_string"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
-    fn try_to_string_rc_does_not_prevalidate() {
-        let storage = Rc::new(NoPrevalidation("étext".as_bytes()));
-        assert_eq!(StringBytes::try_to_string(&storage).unwrap(), "étext");
-    }
-
-    #[test]
-    fn try_to_string_shared_rc_forwards_text_override() {
-        let owner = Rc::new(CheckedTextOverrides("étext"));
+    fn try_to_string_shared_rc_calls_only_inner_override() {
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let owner = Rc::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
         let storage = Rc::clone(&owner);
         let value = StringBytes::try_to_string(&storage).unwrap();
+        assert_eq!(*calls.borrow(), ["try_to_string"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
-    fn try_to_string_shared_rc_does_not_prevalidate() {
-        let owner = Rc::new(NoPrevalidation("étext".as_bytes()));
-        let storage = Rc::clone(&owner);
-        assert_eq!(StringBytes::try_to_string(&storage).unwrap(), "étext");
-    }
-
-    #[test]
-    fn try_to_string_nested_forwards_text_override() {
-        let storage = Rc::new(Arc::new(Box::new(CheckedTextOverrides("étext"))));
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "This test exercises Arc on one thread; its call log need not be Sync."
+    )]
+    fn try_to_string_nested_calls_only_inner_override() {
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let storage = Rc::new(Arc::new(Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        })));
         let value = StringBytes::try_to_string(&storage).unwrap();
+        assert_eq!(*calls.borrow(), ["try_to_string"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
-    fn try_to_string_nested_does_not_prevalidate() {
-        let storage = Rc::new(Arc::new(Box::new(NoPrevalidation("étext".as_bytes()))));
-        assert_eq!(StringBytes::try_to_string(&storage).unwrap(), "étext");
-    }
-
-    #[test]
-    fn try_to_string_shared_nested_forwards_text_override() {
-        let owner = Rc::new(Arc::new(Box::new(CheckedTextOverrides("étext"))));
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "This test exercises Arc on one thread; its call log need not be Sync."
+    )]
+    fn try_to_string_shared_nested_calls_only_inner_override() {
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let owner = Rc::new(Arc::new(Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        })));
         let storage = Rc::clone(&owner);
         let value = StringBytes::try_to_string(&storage).unwrap();
+        assert_eq!(*calls.borrow(), ["try_to_string"]);
         assert_eq!(value, "étext");
-    }
-
-    #[test]
-    fn try_to_string_shared_nested_does_not_prevalidate() {
-        let owner = Rc::new(Arc::new(Box::new(NoPrevalidation("étext".as_bytes()))));
-        let storage = Rc::clone(&owner);
-        assert_eq!(StringBytes::try_to_string(&storage).unwrap(), "étext");
     }
 
     #[test]
@@ -484,31 +560,63 @@ mod tests {
 
     #[test]
     fn to_string_lossy_rc_forwards_text_override() {
-        let storage = Rc::new(LossyTextOverride("étext"));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let storage = Rc::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
         let value = StringBytes::to_string_lossy(&storage);
+        assert_eq!(*calls.borrow(), ["to_string_lossy"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
     fn to_string_lossy_shared_rc_forwards_text_override() {
-        let owner = Rc::new(LossyTextOverride("étext"));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let owner = Rc::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
         let storage = Rc::clone(&owner);
         let value = StringBytes::to_string_lossy(&storage);
+        assert_eq!(*calls.borrow(), ["to_string_lossy"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "This test exercises Arc on one thread; its call log need not be Sync."
+    )]
     fn to_string_lossy_nested_forwards_text_override() {
-        let storage = Rc::new(Arc::new(Box::new(LossyTextOverride("étext"))));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let storage = Rc::new(Arc::new(Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        })));
         let value = StringBytes::to_string_lossy(&storage);
+        assert_eq!(*calls.borrow(), ["to_string_lossy"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "This test exercises Arc on one thread; its call log need not be Sync."
+    )]
     fn to_string_lossy_shared_nested_forwards_text_override() {
-        let owner = Rc::new(Arc::new(Box::new(LossyTextOverride("étext"))));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let owner = Rc::new(Arc::new(Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        })));
         let storage = Rc::clone(&owner);
         let value = StringBytes::to_string_lossy(&storage);
+        assert_eq!(*calls.borrow(), ["to_string_lossy"]);
         assert_eq!(value, "étext");
     }
 
@@ -550,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn try_into_string_rc_vec_error_reuses_buffer() {
+    fn try_into_string_rc_vec_error_keeps_buffer() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -566,11 +674,11 @@ mod tests {
             let error = StringBytes::try_into_string(storage).unwrap_err();
             assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
             assert_eq!(error.utf8_error().error_len(), error_len);
-            let bytes = error.into_bytes();
-            assert_eq!(bytes, input);
+            let bytes = error.into_inner();
+            assert_eq!(StringBytes::as_bytes(&bytes), input);
             assert_eq!(bytes.capacity(), capacity);
             if capacity != 0 {
-                assert_eq!(bytes.as_ptr(), address);
+                assert_eq!(StringBytes::as_bytes(&bytes).as_ptr(), address);
             }
         }
     }
@@ -675,159 +783,276 @@ mod tests {
     }
 
     #[test]
-    fn try_into_string_rc_vec_error_reuses_buffer_with_weak_reference() {
+    fn try_into_string_rc_vec_error_keeps_buffer_with_weak_reference() {
         let mut source = Vec::with_capacity(32);
         source.extend_from_slice(b"ok\xff");
         let capacity = source.capacity();
         let storage = Rc::new(source);
         let weak = Rc::downgrade(&storage);
         let address = StringBytes::as_bytes(&storage).as_ptr();
+        let storage_address = std::ptr::from_ref(&*storage);
         let error = StringBytes::try_into_string(storage).unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 2);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        let value = error.into_bytes();
-        assert_eq!(value, b"ok\xff");
+        let value = error.into_inner();
+        assert_eq!(std::ptr::from_ref(&*value), storage_address);
+        assert_eq!(StringBytes::as_bytes(&value), b"ok\xff");
         if capacity != 0 {
-            assert_eq!(value.as_ptr(), address);
+            assert_eq!(StringBytes::as_bytes(&value).as_ptr(), address);
         }
         assert_eq!(value.capacity(), capacity);
-        assert!(weak.upgrade().is_none());
+        assert!(Rc::ptr_eq(&weak.upgrade().unwrap(), &value));
+        assert_eq!(Rc::strong_count(&value), 1);
     }
 
     #[test]
-    fn try_into_string_rc_vec_error_copies_with_another_strong_owner() {
+    fn try_into_string_rc_vec_error_preserves_shared_ownership() {
         let owner = Rc::new(Vec::from(b"ok\xff".as_slice()));
         let storage = Rc::clone(&owner);
         let address = StringBytes::as_bytes(&storage).as_ptr();
+        let storage_address = std::ptr::from_ref(&*storage);
         let error = StringBytes::try_into_string(storage).unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 2);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        let value = error.into_bytes();
-        assert_eq!(value, b"ok\xff");
-        assert_ne!(value.as_ptr(), address);
+        let value = error.into_inner();
+        assert!(Rc::ptr_eq(&value, &owner));
+        assert_eq!(Rc::strong_count(&value), 2);
+        assert_eq!(std::ptr::from_ref(&*value), storage_address);
+        assert_eq!(StringBytes::as_bytes(&value), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&value).as_ptr(), address);
         assert_eq!(StringBytes::as_bytes(&owner), b"ok\xff");
     }
 
     #[test]
-    fn try_into_string_nested_error_copies_with_another_strong_owner() {
+    fn try_into_string_nested_error_preserves_shared_ownership() {
         let owner = Rc::new(Arc::new(Box::new(Vec::from(b"ok\xff".as_slice()))));
         let storage = Rc::clone(&owner);
         let address = StringBytes::as_bytes(&storage).as_ptr();
+        let storage_address = std::ptr::from_ref(&*storage);
         let error = StringBytes::try_into_string(storage).unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 2);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        let value = error.into_bytes();
-        assert_eq!(value, b"ok\xff");
-        assert_ne!(value.as_ptr(), address);
+        let value = error.into_inner();
+        assert!(Rc::ptr_eq(&value, &owner));
+        assert_eq!(Rc::strong_count(&value), 2);
+        assert_eq!(std::ptr::from_ref(&*value), storage_address);
+        assert_eq!(StringBytes::as_bytes(&value), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&value).as_ptr(), address);
         assert_eq!(StringBytes::as_bytes(&owner), b"ok\xff");
     }
 
     #[test]
-    fn try_into_string_rc_slice_error_unique_copies() {
+    fn try_into_string_rc_slice_error_preserves_unique_pointer() {
         let storage = Rc::<[u8]>::from(b"ok\xff".as_slice());
         let address = StringBytes::as_bytes(&storage).as_ptr();
+        let storage_address = std::ptr::from_ref(&*storage);
         let error = StringBytes::try_into_string(storage).unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 2);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        let value = error.into_bytes();
-        assert_eq!(value, b"ok\xff");
-        assert_ne!(value.as_ptr(), address);
+        let value = error.into_inner();
+        assert_eq!(std::ptr::from_ref(&*value), storage_address);
+        assert_eq!(StringBytes::as_bytes(&value), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&value).as_ptr(), address);
     }
 
     #[test]
-    fn try_into_string_rc_slice_error_shared_copies() {
+    fn try_into_string_rc_slice_error_preserves_shared_pointer() {
         let storage = Rc::<[u8]>::from(b"ok\xff".as_slice());
         let other = Rc::clone(&storage);
         let address = StringBytes::as_bytes(&storage).as_ptr();
+        let storage_address = std::ptr::from_ref(&*storage);
         let error = StringBytes::try_into_string(storage).unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 2);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        let value = error.into_bytes();
-        assert_eq!(value, b"ok\xff");
-        assert_ne!(value.as_ptr(), address);
+        let value = error.into_inner();
+        assert!(Rc::ptr_eq(&value, &other));
+        assert_eq!(Rc::strong_count(&value), 2);
+        assert_eq!(std::ptr::from_ref(&*value), storage_address);
+        assert_eq!(StringBytes::as_bytes(&value), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&value).as_ptr(), address);
         assert_eq!(StringBytes::as_bytes(&other), b"ok\xff");
     }
 
     #[test]
-    fn try_into_string_rc_c_str_error_unique_copies() {
+    fn try_into_string_rc_c_str_error_preserves_unique_pointer() {
         let storage = Rc::<CStr>::from(c"ok\xff");
         let address = StringBytes::as_bytes(&storage).as_ptr();
+        let storage_address = std::ptr::from_ref(&*storage);
         let error = StringBytes::try_into_string(storage).unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 2);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        let value = error.into_bytes();
-        assert_eq!(value, b"ok\xff");
-        assert_ne!(value.as_ptr(), address);
+        let value = error.into_inner();
+        assert_eq!(value.to_bytes_with_nul().last(), Some(&0));
+        assert_eq!(
+            value.to_bytes_with_nul().len(),
+            StringBytes::as_bytes(&value).len() + 1
+        );
+        assert_eq!(std::ptr::from_ref(&*value), storage_address);
+        assert_eq!(StringBytes::as_bytes(&value), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&value).as_ptr(), address);
     }
 
     #[test]
-    fn try_into_string_rc_c_str_error_shared_copies() {
+    fn try_into_string_rc_c_str_error_preserves_shared_pointer() {
         let storage = Rc::<CStr>::from(c"ok\xff");
         let other = Rc::clone(&storage);
         let address = StringBytes::as_bytes(&storage).as_ptr();
+        let storage_address = std::ptr::from_ref(&*storage);
         let error = StringBytes::try_into_string(storage).unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 2);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        let value = error.into_bytes();
-        assert_eq!(value, b"ok\xff");
-        assert_ne!(value.as_ptr(), address);
+        let value = error.into_inner();
+        assert_eq!(value.to_bytes_with_nul().last(), Some(&0));
+        assert_eq!(
+            value.to_bytes_with_nul().len(),
+            StringBytes::as_bytes(&value).len() + 1
+        );
+        assert!(Rc::ptr_eq(&value, &other));
+        assert_eq!(Rc::strong_count(&value), 2);
+        assert_eq!(std::ptr::from_ref(&*value), storage_address);
+        assert_eq!(StringBytes::as_bytes(&value), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&value).as_ptr(), address);
         assert_eq!(StringBytes::as_bytes(&other), b"ok\xff");
     }
 
     #[test]
     fn try_into_string_rc_forwards_text_override() {
-        let storage = Rc::new(CheckedTextOverrides("étext"));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let storage = Rc::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
         let value = StringBytes::try_into_string(storage).unwrap();
+        assert_eq!(*calls.borrow(), ["try_borrow_str", "into_bytes"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
-    fn try_into_string_rc_does_not_prevalidate() {
-        let storage = Rc::new(NoPrevalidation("étext".as_bytes()));
-        assert_eq!(StringBytes::try_into_string(storage).unwrap(), "étext");
+    fn try_into_string_rc_returns_original_without_byte_conversion() {
+        let input = b"ok\xff";
+        let calls = RefCell::new(Vec::new());
+        let storage = Rc::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
+        let address = input.as_ptr();
+        let error = StringBytes::try_into_string(storage).unwrap_err();
+        assert_eq!(*calls.borrow(), ["try_borrow_str"]);
+        assert_eq!(error.utf8_error().valid_up_to(), 2);
+        let recovered = error.into_inner();
+        assert_eq!(StringBytes::as_bytes(&recovered), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&recovered).as_ptr(), address);
     }
 
     #[test]
     fn try_into_string_shared_rc_forwards_text_override() {
-        let owner = Rc::new(CheckedTextOverrides("étext"));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let owner = Rc::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
         let storage = Rc::clone(&owner);
         let value = StringBytes::try_into_string(storage).unwrap();
+        assert_eq!(*calls.borrow(), ["try_borrow_str", "to_bytes"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
-    fn try_into_string_shared_rc_does_not_prevalidate() {
-        let owner = Rc::new(NoPrevalidation("étext".as_bytes()));
+    fn try_into_string_shared_rc_returns_original_without_byte_conversion() {
+        let input = b"ok\xff";
+        let calls = RefCell::new(Vec::new());
+        let owner = Rc::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
         let storage = Rc::clone(&owner);
-        assert_eq!(StringBytes::try_into_string(storage).unwrap(), "étext");
+        let address = input.as_ptr();
+        let error = StringBytes::try_into_string(storage).unwrap_err();
+        assert_eq!(*calls.borrow(), ["try_borrow_str"]);
+        assert_eq!(error.utf8_error().valid_up_to(), 2);
+        let recovered = error.into_inner();
+        assert_eq!(StringBytes::as_bytes(&recovered), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&recovered).as_ptr(), address);
     }
 
     #[test]
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "This test exercises Arc on one thread; its call log need not be Sync."
+    )]
     fn try_into_string_nested_forwards_text_override() {
-        let storage = Rc::new(Arc::new(Box::new(CheckedTextOverrides("étext"))));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let storage = Rc::new(Arc::new(Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        })));
         let value = StringBytes::try_into_string(storage).unwrap();
+        assert_eq!(*calls.borrow(), ["try_borrow_str", "into_bytes"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
-    fn try_into_string_nested_does_not_prevalidate() {
-        let storage = Rc::new(Arc::new(Box::new(NoPrevalidation("étext".as_bytes()))));
-        assert_eq!(StringBytes::try_into_string(storage).unwrap(), "étext");
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "This test exercises Arc on one thread; its call log need not be Sync."
+    )]
+    fn try_into_string_nested_returns_original_without_byte_conversion() {
+        let input = b"ok\xff";
+        let calls = RefCell::new(Vec::new());
+        let storage = Rc::new(Arc::new(Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        })));
+        let address = input.as_ptr();
+        let error = StringBytes::try_into_string(storage).unwrap_err();
+        assert_eq!(*calls.borrow(), ["try_borrow_str"]);
+        assert_eq!(error.utf8_error().valid_up_to(), 2);
+        let recovered = error.into_inner();
+        assert_eq!(StringBytes::as_bytes(&recovered), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&recovered).as_ptr(), address);
     }
 
     #[test]
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "This test exercises Arc on one thread; its call log need not be Sync."
+    )]
     fn try_into_string_shared_nested_forwards_text_override() {
-        let owner = Rc::new(Arc::new(Box::new(CheckedTextOverrides("étext"))));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let owner = Rc::new(Arc::new(Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        })));
         let storage = Rc::clone(&owner);
         let value = StringBytes::try_into_string(storage).unwrap();
+        assert_eq!(*calls.borrow(), ["try_borrow_str", "to_bytes"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
-    fn try_into_string_shared_nested_does_not_prevalidate() {
-        let owner = Rc::new(Arc::new(Box::new(NoPrevalidation("étext".as_bytes()))));
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "This test exercises Arc on one thread; its call log need not be Sync."
+    )]
+    fn try_into_string_shared_nested_returns_original_without_byte_conversion() {
+        let input = b"ok\xff";
+        let calls = RefCell::new(Vec::new());
+        let owner = Rc::new(Arc::new(Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        })));
         let storage = Rc::clone(&owner);
-        assert_eq!(StringBytes::try_into_string(storage).unwrap(), "étext");
+        let address = input.as_ptr();
+        let error = StringBytes::try_into_string(storage).unwrap_err();
+        assert_eq!(*calls.borrow(), ["try_borrow_str"]);
+        assert_eq!(error.utf8_error().valid_up_to(), 2);
+        let recovered = error.into_inner();
+        assert_eq!(StringBytes::as_bytes(&recovered), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&recovered).as_ptr(), address);
     }
 
     #[test]
@@ -868,19 +1093,23 @@ mod tests {
     }
 
     #[test]
-    fn try_into_string_rc_c_string_error_reuses_buffer_without_nul() {
+    fn try_into_string_rc_c_string_error_preserves_c_string() {
         let storage = Rc::new(std::ffi::CString::new(b"ok\xff".as_slice()).unwrap());
         let address = StringBytes::as_bytes(&storage).as_ptr();
-        let capacity = 4;
+
+        let storage_address = std::ptr::from_ref(&*storage);
         let error = StringBytes::try_into_string(storage).unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 2);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        let value = error.into_bytes();
-        assert_eq!(value, b"ok\xff");
-        if capacity != 0 {
-            assert_eq!(value.as_ptr(), address);
-        }
-        assert_eq!(value.capacity(), capacity);
+        let value = error.into_inner();
+        assert_eq!(value.as_bytes_with_nul().last(), Some(&0));
+        assert_eq!(
+            value.as_bytes_with_nul().len(),
+            StringBytes::as_bytes(&value).len() + 1
+        );
+        assert_eq!(std::ptr::from_ref(&*value), storage_address);
+        assert_eq!(StringBytes::as_bytes(&value), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&value).as_ptr(), address);
     }
 
     #[test]
@@ -1019,58 +1248,122 @@ mod tests {
 
     #[test]
     fn into_string_lossy_rc_forwards_text_override() {
-        let storage = Rc::new(LossyTextOverride("étext"));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let storage = Rc::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
         let value = StringBytes::into_string_lossy(storage);
+        assert_eq!(*calls.borrow(), ["to_string_lossy", "into_bytes"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
     fn into_string_lossy_rc_does_not_make_an_intermediate_copy() {
-        let storage = Rc::new(NoIntermediateCopy(b"a\xffb"));
+        let input = b"a\xffb";
+        let calls = RefCell::new(Vec::new());
+        let storage = Rc::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
         assert_eq!(StringBytes::into_string_lossy(storage), "a�b");
+        assert_eq!(*calls.borrow(), ["to_string_lossy"]);
     }
 
     #[test]
     fn into_string_lossy_shared_rc_forwards_text_override() {
-        let owner = Rc::new(LossyTextOverride("étext"));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let owner = Rc::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
         let storage = Rc::clone(&owner);
         let value = StringBytes::into_string_lossy(storage);
+        assert_eq!(*calls.borrow(), ["to_string_lossy", "to_bytes"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
     fn into_string_lossy_shared_rc_does_not_make_an_intermediate_copy() {
-        let owner = Rc::new(NoIntermediateCopy(b"a\xffb"));
+        let input = b"a\xffb";
+        let calls = RefCell::new(Vec::new());
+        let owner = Rc::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
         let storage = Rc::clone(&owner);
         assert_eq!(StringBytes::into_string_lossy(storage), "a�b");
+        assert_eq!(*calls.borrow(), ["to_string_lossy"]);
     }
 
     #[test]
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "This test exercises Arc on one thread; its call log need not be Sync."
+    )]
     fn into_string_lossy_nested_forwards_text_override() {
-        let storage = Rc::new(Arc::new(Box::new(LossyTextOverride("étext"))));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let storage = Rc::new(Arc::new(Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        })));
         let value = StringBytes::into_string_lossy(storage);
+        assert_eq!(*calls.borrow(), ["to_string_lossy", "into_bytes"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "This test exercises Arc on one thread; its call log need not be Sync."
+    )]
     fn into_string_lossy_nested_does_not_make_an_intermediate_copy() {
-        let storage = Rc::new(Arc::new(Box::new(NoIntermediateCopy(b"a\xffb"))));
+        let input = b"a\xffb";
+        let calls = RefCell::new(Vec::new());
+        let storage = Rc::new(Arc::new(Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        })));
         assert_eq!(StringBytes::into_string_lossy(storage), "a�b");
+        assert_eq!(*calls.borrow(), ["to_string_lossy"]);
     }
 
     #[test]
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "This test exercises Arc on one thread; its call log need not be Sync."
+    )]
     fn into_string_lossy_shared_nested_forwards_text_override() {
-        let owner = Rc::new(Arc::new(Box::new(LossyTextOverride("étext"))));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let owner = Rc::new(Arc::new(Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        })));
         let storage = Rc::clone(&owner);
         let value = StringBytes::into_string_lossy(storage);
+        assert_eq!(*calls.borrow(), ["to_string_lossy", "to_bytes"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
+    #[expect(
+        clippy::arc_with_non_send_sync,
+        reason = "This test exercises Arc on one thread; its call log need not be Sync."
+    )]
     fn into_string_lossy_shared_nested_does_not_make_an_intermediate_copy() {
-        let owner = Rc::new(Arc::new(Box::new(NoIntermediateCopy(b"a\xffb"))));
+        let input = b"a\xffb";
+        let calls = RefCell::new(Vec::new());
+        let owner = Rc::new(Arc::new(Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        })));
         let storage = Rc::clone(&owner);
         assert_eq!(StringBytes::into_string_lossy(storage), "a�b");
+        assert_eq!(*calls.borrow(), ["to_string_lossy"]);
     }
 
     #[test]
@@ -1261,20 +1554,22 @@ mod tests {
     }
 
     #[test]
-    fn rc_into_string_vec_error_reuses_buffer() {
+    fn rc_into_string_vec_error_keeps_buffer() {
         let mut source = Vec::with_capacity(32);
         source.extend_from_slice(b"ok\xff");
         let source_capacity = source.capacity();
         let storage = Rc::new(source);
         let address = StringBytes::as_bytes(&storage).as_ptr();
         let capacity = source_capacity;
+        let storage_address = std::ptr::from_ref(&*storage);
         let error = StringBytes::rc_into_string(storage).unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 2);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        let value = error.into_bytes();
-        assert_eq!(value, b"ok\xff");
+        let value = error.into_inner();
+        assert_eq!(std::ptr::from_ref(&*value), storage_address);
+        assert_eq!(StringBytes::as_bytes(&value), b"ok\xff");
         if capacity != 0 {
-            assert_eq!(value.as_ptr(), address);
+            assert_eq!(StringBytes::as_bytes(&value).as_ptr(), address);
         }
         assert_eq!(value.capacity(), capacity);
     }

@@ -263,7 +263,7 @@ mod tests {
     }
 
     #[test]
-    fn try_to_string_io_slice_mut_returns_a_copy_of_invalid_bytes() {
+    fn try_to_string_io_slice_mut_reports_invalid_utf8_without_changing_storage() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -273,13 +273,8 @@ mod tests {
             let mut source = input.to_vec();
             let storage = IoSliceMut::new(&mut source);
             let error = StringBytes::try_to_string(&storage).unwrap_err();
-            assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
-            assert_eq!(error.utf8_error().error_len(), error_len);
-            assert_eq!(error.as_bytes(), input);
-            assert_ne!(
-                error.as_bytes().as_ptr(),
-                StringBytes::as_bytes(&storage).as_ptr()
-            );
+            assert_eq!(error.valid_up_to(), valid_up_to);
+            assert_eq!(error.error_len(), error_len);
             assert_eq!(StringBytes::as_bytes(&storage), input);
         }
     }
@@ -299,9 +294,9 @@ mod tests {
         let mut storage = IoSliceMut::new(&mut source);
         storage.advance(1);
         let error = StringBytes::try_to_string(&storage).unwrap_err();
-        assert_eq!(error.utf8_error().valid_up_to(), 0);
-        assert_eq!(error.utf8_error().error_len(), Some(1));
-        assert_eq!(error.into_bytes(), b"\xa9text");
+        assert_eq!(error.valid_up_to(), 0);
+        assert_eq!(error.error_len(), Some(1));
+        assert_eq!(StringBytes::as_bytes(&storage), b"\xa9text");
     }
 
     #[test]
@@ -392,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn try_into_string_io_slice_mut_error_copies_storage() {
+    fn try_into_string_io_slice_mut_error_returns_original() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -405,10 +400,10 @@ mod tests {
             let error = StringBytes::try_into_string(storage).unwrap_err();
             assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
             assert_eq!(error.utf8_error().error_len(), error_len);
-            let bytes = error.into_bytes();
-            assert_eq!(bytes, input);
+            let bytes = error.into_inner();
+            assert_eq!(StringBytes::as_bytes(&bytes), input);
             if !input.is_empty() {
-                assert_ne!(bytes.as_ptr(), address);
+                assert_eq!(StringBytes::as_bytes(&bytes).as_ptr(), address);
             }
         }
     }
@@ -424,6 +419,24 @@ mod tests {
     }
 
     #[test]
+    fn try_into_string_io_slice_mut_can_repair_and_retry_advanced_view() {
+        let mut source = *b"prefixok\xff";
+        let mut storage = IoSliceMut::new(&mut source);
+        storage.advance(6);
+        let address = storage.as_ptr();
+
+        let error = StringBytes::try_into_string(storage).unwrap_err();
+        assert_eq!(error.utf8_error().valid_up_to(), 2);
+        let mut recovered: IoSliceMut<'_> = error.into_inner();
+        assert_eq!(&*recovered, b"ok\xff");
+        assert_eq!(recovered.as_ptr(), address);
+        recovered[2] = b'!';
+
+        assert_eq!(StringBytes::try_into_string(recovered).unwrap(), "ok!");
+        assert_eq!(&source, b"prefixok!");
+    }
+
+    #[test]
     fn try_into_string_io_slice_mut_rejects_view_starting_inside_utf8() {
         let mut source = "étext".as_bytes().to_vec();
         let mut storage = IoSliceMut::new(&mut source);
@@ -431,7 +444,7 @@ mod tests {
         let error = StringBytes::try_into_string(storage).unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 0);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        assert_eq!(error.into_bytes(), b"\xa9text");
+        assert_eq!(StringBytes::as_bytes(&error.into_inner()), b"\xa9text");
     }
 
     #[test]

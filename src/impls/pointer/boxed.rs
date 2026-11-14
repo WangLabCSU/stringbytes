@@ -1,18 +1,17 @@
 use std::borrow::Cow;
 use std::rc::Rc;
-use std::str::Utf8Error;
-use std::string::FromUtf8Error;
 use std::sync::Arc;
 
 use crate::impls::impl_pointer_conversions_for_sized;
 use crate::impls::pointer::impl_string_bytes_for_pointer;
-use crate::{sealed, StringBytes};
+use crate::{sealed, FromUtf8Error, StringBytes, Utf8Error};
 
 impl_string_bytes_for_pointer!(
     /// Borrows the boxed value's bytes and delegates string conversions to `T`.
     ///
-    /// Consuming conversions transfer the box's allocation or an inner buffer
-    /// when `T` supports it, and copy the bytes otherwise.
+    /// [`into_bytes`](StringBytes::into_bytes) and successful
+    /// [`try_into_string`](StringBytes::try_into_string) calls transfer the box's
+    /// allocation or an inner buffer when `T` supports it, and copy otherwise.
     /// Copying conversions leave the boxed value unchanged.
     /// UTF-8 validation follows `T`'s string conversions.
     Box<T> => box_into_bytes, box_into_string
@@ -21,15 +20,58 @@ impl_string_bytes_for_pointer!(
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
+    use std::cell::RefCell;
     use std::io::IoSlice;
     use std::io::IoSliceMut;
     use std::rc::Rc;
     use std::sync::Arc;
 
-    use crate::impls::pointer::fixtures::{
-        CheckedTextOverrides, LossyTextOverride, NoIntermediateCopy, NoPrevalidation,
-    };
+    use crate::impls::impl_pointer_conversions_for_sized;
     use crate::StringBytes;
+
+    // Records dispatch only; each test asserts its own expected calls.
+    struct RecordingStorage<'a> {
+        bytes: &'a [u8],
+        calls: &'a RefCell<Vec<&'static str>>,
+    }
+
+    impl crate::sealed::Sealed for RecordingStorage<'_> {}
+
+    impl StringBytes for RecordingStorage<'_> {
+        fn as_bytes(&self) -> &[u8] {
+            self.calls.borrow_mut().push("as_bytes");
+            self.bytes
+        }
+
+        fn to_bytes(&self) -> Vec<u8> {
+            self.calls.borrow_mut().push("to_bytes");
+            self.bytes.to_vec()
+        }
+
+        fn into_bytes(self) -> Vec<u8> {
+            self.calls.borrow_mut().push("into_bytes");
+            self.bytes.to_vec()
+        }
+
+        fn try_borrow_str(&self) -> Result<&str, crate::Utf8Error> {
+            self.calls.borrow_mut().push("try_borrow_str");
+            std::str::from_utf8(self.bytes).map_err(crate::Utf8Error::from)
+        }
+
+        fn try_to_string(&self) -> Result<String, crate::Utf8Error> {
+            self.calls.borrow_mut().push("try_to_string");
+            std::str::from_utf8(self.bytes)
+                .map(str::to_owned)
+                .map_err(crate::Utf8Error::from)
+        }
+
+        fn to_string_lossy(&self) -> Cow<'_, str> {
+            self.calls.borrow_mut().push("to_string_lossy");
+            String::from_utf8_lossy(self.bytes)
+        }
+
+        impl_pointer_conversions_for_sized!();
+    }
 
     #[test]
     fn as_bytes_box_vec_exposes_stable_contents() {
@@ -359,8 +401,14 @@ mod tests {
 
     #[test]
     fn try_borrow_str_box_forwards_text_override() {
-        let storage = Box::new(CheckedTextOverrides("étext"));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let storage = Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
         let value = StringBytes::try_borrow_str(&storage).unwrap();
+        assert_eq!(*calls.borrow(), ["try_borrow_str"]);
         assert_eq!(value, "étext");
     }
 
@@ -416,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn try_to_string_box_vec_returns_a_copy_of_invalid_bytes() {
+    fn try_to_string_box_vec_reports_invalid_utf8_without_changing_storage() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -427,13 +475,8 @@ mod tests {
             source.extend_from_slice(input);
             let storage = Box::new(source);
             let error = StringBytes::try_to_string(&storage).unwrap_err();
-            assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
-            assert_eq!(error.utf8_error().error_len(), error_len);
-            assert_eq!(error.as_bytes(), input);
-            assert_ne!(
-                error.as_bytes().as_ptr(),
-                StringBytes::as_bytes(&storage).as_ptr()
-            );
+            assert_eq!(error.valid_up_to(), valid_up_to);
+            assert_eq!(error.error_len(), error_len);
             assert_eq!(StringBytes::as_bytes(&storage), input);
         }
     }
@@ -456,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn try_to_string_nested_returns_a_copy_of_invalid_bytes() {
+    fn try_to_string_nested_reports_invalid_utf8_without_changing_storage() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -467,28 +510,23 @@ mod tests {
             source.extend_from_slice(input);
             let storage = Box::new(Rc::new(Arc::new(Box::new(source))));
             let error = StringBytes::try_to_string(&storage).unwrap_err();
-            assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
-            assert_eq!(error.utf8_error().error_len(), error_len);
-            assert_eq!(error.as_bytes(), input);
-            assert_ne!(
-                error.as_bytes().as_ptr(),
-                StringBytes::as_bytes(&storage).as_ptr()
-            );
+            assert_eq!(error.valid_up_to(), valid_up_to);
+            assert_eq!(error.error_len(), error_len);
             assert_eq!(StringBytes::as_bytes(&storage), input);
         }
     }
 
     #[test]
-    fn try_to_string_box_forwards_text_override() {
-        let storage = Box::new(CheckedTextOverrides("étext"));
+    fn try_to_string_box_calls_only_inner_override() {
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let storage = Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
         let value = StringBytes::try_to_string(&storage).unwrap();
+        assert_eq!(*calls.borrow(), ["try_to_string"]);
         assert_eq!(value, "étext");
-    }
-
-    #[test]
-    fn try_to_string_box_does_not_prevalidate() {
-        let storage = Box::new(NoPrevalidation("étext".as_bytes()));
-        assert_eq!(StringBytes::try_to_string(&storage).unwrap(), "étext");
     }
 
     #[test]
@@ -569,8 +607,14 @@ mod tests {
 
     #[test]
     fn to_string_lossy_box_forwards_text_override() {
-        let storage = Box::new(LossyTextOverride("étext"));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let storage = Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
         let value = StringBytes::to_string_lossy(&storage);
+        assert_eq!(*calls.borrow(), ["to_string_lossy"]);
         assert_eq!(value, "étext");
     }
 
@@ -630,7 +674,7 @@ mod tests {
     }
 
     #[test]
-    fn try_into_string_box_vec_error_reuses_buffer() {
+    fn try_into_string_box_vec_error_keeps_buffer() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -646,11 +690,11 @@ mod tests {
             let error = StringBytes::try_into_string(storage).unwrap_err();
             assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
             assert_eq!(error.utf8_error().error_len(), error_len);
-            let bytes = error.into_bytes();
-            assert_eq!(bytes, input);
+            let bytes = error.into_inner();
+            assert_eq!(StringBytes::as_bytes(&bytes), input);
             assert_eq!(bytes.capacity(), capacity);
             if capacity != 0 {
-                assert_eq!(bytes.as_ptr(), address);
+                assert_eq!(StringBytes::as_bytes(&bytes).as_ptr(), address);
             }
         }
     }
@@ -675,7 +719,7 @@ mod tests {
     }
 
     #[test]
-    fn try_into_string_nested_error_reuses_buffer() {
+    fn try_into_string_nested_error_keeps_buffer() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -691,26 +735,43 @@ mod tests {
             let error = StringBytes::try_into_string(storage).unwrap_err();
             assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
             assert_eq!(error.utf8_error().error_len(), error_len);
-            let bytes = error.into_bytes();
-            assert_eq!(bytes, input);
+            let bytes = error.into_inner();
+            assert_eq!(StringBytes::as_bytes(&bytes), input);
             assert_eq!(bytes.capacity(), capacity);
             if capacity != 0 {
-                assert_eq!(bytes.as_ptr(), address);
+                assert_eq!(StringBytes::as_bytes(&bytes).as_ptr(), address);
             }
         }
     }
 
     #[test]
     fn try_into_string_box_forwards_text_override() {
-        let storage = Box::new(CheckedTextOverrides("étext"));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let storage = Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
         let value = StringBytes::try_into_string(storage).unwrap();
+        assert_eq!(*calls.borrow(), ["try_borrow_str", "into_bytes"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
-    fn try_into_string_box_does_not_prevalidate() {
-        let storage = Box::new(NoPrevalidation("étext".as_bytes()));
-        assert_eq!(StringBytes::try_into_string(storage).unwrap(), "étext");
+    fn try_into_string_box_returns_original_without_byte_conversion() {
+        let input = b"ok\xff";
+        let calls = RefCell::new(Vec::new());
+        let storage = Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
+        let address = input.as_ptr();
+        let error = StringBytes::try_into_string(storage).unwrap_err();
+        assert_eq!(*calls.borrow(), ["try_borrow_str"]);
+        assert_eq!(error.utf8_error().valid_up_to(), 2);
+        let recovered = error.into_inner();
+        assert_eq!(StringBytes::as_bytes(&recovered), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&recovered).as_ptr(), address);
     }
 
     #[test]
@@ -764,35 +825,38 @@ mod tests {
     }
 
     #[test]
-    fn try_into_string_box_c_string_error_reuses_buffer_without_nul() {
+    fn try_into_string_box_c_string_error_preserves_c_string() {
         let storage = Box::new(std::ffi::CString::new(b"ok\xff".as_slice()).unwrap());
         let address = StringBytes::as_bytes(&storage).as_ptr();
-        let capacity = 4;
+
+        let storage_address = std::ptr::from_ref(&*storage);
         let error = StringBytes::try_into_string(storage).unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 2);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        let value = error.into_bytes();
-        assert_eq!(value, b"ok\xff");
-        if capacity != 0 {
-            assert_eq!(value.as_ptr(), address);
-        }
-        assert_eq!(value.capacity(), capacity);
+        let value = error.into_inner();
+        assert_eq!(value.as_bytes_with_nul().last(), Some(&0));
+        assert_eq!(
+            value.as_bytes_with_nul().len(),
+            StringBytes::as_bytes(&value).len() + 1
+        );
+        assert_eq!(std::ptr::from_ref(&*value), storage_address);
+        assert_eq!(StringBytes::as_bytes(&value), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&value).as_ptr(), address);
     }
 
     #[test]
-    fn try_into_string_boxed_array_error_reuses_allocation() {
+    fn try_into_string_boxed_array_error_keeps_allocation() {
         let storage = Box::new(*b"ok\xff");
         let address = StringBytes::as_bytes(&storage).as_ptr();
-        let capacity = 3;
+
+        let storage_address = std::ptr::from_ref(&*storage);
         let error = StringBytes::try_into_string(storage).unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 2);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        let value = error.into_bytes();
-        assert_eq!(value, b"ok\xff");
-        if capacity != 0 {
-            assert_eq!(value.as_ptr(), address);
-        }
-        assert_eq!(value.capacity(), capacity);
+        let value = error.into_inner();
+        assert_eq!(std::ptr::from_ref(&*value), storage_address);
+        assert_eq!(StringBytes::as_bytes(&value), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&value).as_ptr(), address);
     }
 
     #[test]
@@ -867,15 +931,27 @@ mod tests {
 
     #[test]
     fn into_string_lossy_box_forwards_text_override() {
-        let storage = Box::new(LossyTextOverride("étext"));
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let storage = Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
         let value = StringBytes::into_string_lossy(storage);
+        assert_eq!(*calls.borrow(), ["to_string_lossy", "into_bytes"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
     fn into_string_lossy_box_does_not_make_an_intermediate_copy() {
-        let storage = Box::new(NoIntermediateCopy(b"a\xffb"));
+        let input = b"a\xffb";
+        let calls = RefCell::new(Vec::new());
+        let storage = Box::new(RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        });
         assert_eq!(StringBytes::into_string_lossy(storage), "a�b");
+        assert_eq!(*calls.borrow(), ["to_string_lossy"]);
     }
 
     #[test]
@@ -1005,20 +1081,22 @@ mod tests {
     }
 
     #[test]
-    fn box_into_string_vec_error_reuses_buffer() {
+    fn box_into_string_vec_error_keeps_buffer() {
         let mut source = Vec::with_capacity(32);
         source.extend_from_slice(b"ok\xff");
         let source_capacity = source.capacity();
         let storage = Box::new(source);
         let address = StringBytes::as_bytes(&storage).as_ptr();
         let capacity = source_capacity;
+        let storage_address = std::ptr::from_ref(&*storage);
         let error = StringBytes::box_into_string(storage).unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 2);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        let value = error.into_bytes();
-        assert_eq!(value, b"ok\xff");
+        let value = error.into_inner();
+        assert_eq!(std::ptr::from_ref(&*value), storage_address);
+        assert_eq!(StringBytes::as_bytes(&value), b"ok\xff");
         if capacity != 0 {
-            assert_eq!(value.as_ptr(), address);
+            assert_eq!(StringBytes::as_bytes(&value).as_ptr(), address);
         }
         assert_eq!(value.capacity(), capacity);
     }

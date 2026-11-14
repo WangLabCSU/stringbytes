@@ -1,6 +1,6 @@
 [package]
 name = "stringbytes"
-version = "0.0.3"
+version = "0.0.4"
 description = "A trait for byte sequences and UTF-8 strings"
 authors = ["Yun Peng <pengyun.me@outlook.com>"]
 edition = "2021"
@@ -14,10 +14,12 @@ categories = ["text-processing"]
 include = ["/src/**", "/benches/**", "/Cargo.toml", "/README.md", "/LICENSE"]
 
 [package.metadata.docs.rs]
-features = ["bytes"]
+features = ["bytes", "simd"]
 
 [features]
 bytes = ["dep:bytes"]
+simd = ["dep:simdutf8"]
 
 [dependencies]
 bytes = { version = "1.12.*", optional = true }
+simdutf8 = { version = "0.1.5", optional = true }

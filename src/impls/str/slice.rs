@@ -1,11 +1,9 @@
 use std::borrow::Cow;
 use std::rc::Rc;
-use std::str::Utf8Error;
-use std::string::FromUtf8Error;
 use std::sync::Arc;
 
 use crate::impls::impl_string_bytes;
-use crate::{sealed, StringBytes};
+use crate::{sealed, FromUtf8Error, StringBytes, Utf8Error};
 
 // str is unsized, so consuming conversions use owning pointer receivers.
 impl_string_bytes!(
@@ -31,7 +29,7 @@ impl_string_bytes!(
 
         /// Copies this string without checking UTF-8.
         #[inline]
-        fn try_to_string(&self) -> Result<String, FromUtf8Error> {
+        fn try_to_string(&self) -> Result<String, Utf8Error> {
             Ok(self.to_owned())
         }
 
@@ -50,7 +48,7 @@ impl_string_bytes!(
         /// Converts the boxed string into a [`String`] without reallocating or
         /// checking UTF-8 again.
         #[inline]
-        fn box_into_string(self: Box<Self>) -> Result<String, FromUtf8Error> {
+        fn box_into_string(self: Box<Self>) -> Result<String, FromUtf8Error<Box<Self>>> {
             // String::from takes over the Box's allocation.
             Ok(String::from(self))
         }
@@ -62,7 +60,7 @@ impl_string_bytes!(
         ///
         /// The allocation is not reused, even with only one strong owner.
         #[inline]
-        fn rc_into_string(self: Rc<Self>) -> Result<String, FromUtf8Error> {
+        fn rc_into_string(self: Rc<Self>) -> Result<String, FromUtf8Error<Rc<Self>>> {
             Ok(String::from(&*self))
         }
 
@@ -70,7 +68,7 @@ impl_string_bytes!(
         ///
         /// The allocation is not reused, even with only one strong owner.
         #[inline]
-        fn arc_into_string(self: Arc<Self>) -> Result<String, FromUtf8Error> {
+        fn arc_into_string(self: Arc<Self>) -> Result<String, FromUtf8Error<Arc<Self>>> {
             Ok(String::from(&*self))
         }
     }

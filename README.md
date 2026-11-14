@@ -23,6 +23,12 @@ borrow them as [`&str`](https://doc.rust-lang.org/stable/std/primitive.str.html)
 Unchecked conversions let callers uphold UTF-8 validity themselves.
 Lossy conversions follow the same behavior as [`String::from_utf8_lossy`](https://doc.rust-lang.org/stable/alloc/string/struct.String.html#method.from_utf8_lossy).
 
+## Features
+
+Enable `simd` to use SIMD-accelerated UTF-8 validation where supported.
+This feature is disabled by default. Both configurations return the same
+[`Utf8Error`](https://docs.rs/stringbytes/latest/stringbytes/error/struct.Utf8Error.html) and [`FromUtf8Error`](https://docs.rs/stringbytes/latest/stringbytes/error/struct.FromUtf8Error.html) types.
+
 ## Examples
 
 ### `&[u8]`

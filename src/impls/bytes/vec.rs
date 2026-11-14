@@ -1,5 +1,4 @@
 use std::rc::Rc;
-use std::string::FromUtf8Error;
 use std::sync::Arc;
 
 use crate::impls::{impl_pointer_conversions_for_sized, impl_string_bytes};
@@ -11,7 +10,7 @@ impl_string_bytes!(
     /// [`into_bytes`](StringBytes::into_bytes) returns the vector unchanged.
     /// [`try_into_string`](StringBytes::try_into_string) validates UTF-8 and
     /// keeps the buffer and capacity, including when conversion returns an error.
-    /// Borrowing and copying string conversions also validate UTF-8.
+    /// Checked borrowing and copying conversions also validate UTF-8.
     Vec<u8> {
         /// Borrows the initialized bytes of the vector.
         #[inline]
@@ -241,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn try_to_string_vec_returns_a_copy_of_invalid_bytes() {
+    fn try_to_string_vec_reports_invalid_utf8_without_changing_storage() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -251,13 +250,8 @@ mod tests {
             let mut storage = Vec::with_capacity(input.len() + 32);
             storage.extend_from_slice(input);
             let error = StringBytes::try_to_string(&storage).unwrap_err();
-            assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
-            assert_eq!(error.utf8_error().error_len(), error_len);
-            assert_eq!(error.as_bytes(), input);
-            assert_ne!(
-                error.as_bytes().as_ptr(),
-                StringBytes::as_bytes(&storage).as_ptr()
-            );
+            assert_eq!(error.valid_up_to(), valid_up_to);
+            assert_eq!(error.error_len(), error_len);
             assert_eq!(StringBytes::as_bytes(&storage), input);
         }
     }
@@ -333,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn try_into_string_vec_error_reuses_buffer() {
+    fn try_into_string_vec_error_keeps_buffer() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -347,11 +341,11 @@ mod tests {
             let error = StringBytes::try_into_string(storage).unwrap_err();
             assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
             assert_eq!(error.utf8_error().error_len(), error_len);
-            let bytes = error.into_bytes();
-            assert_eq!(bytes, input);
+            let bytes = error.into_inner();
+            assert_eq!(StringBytes::as_bytes(&bytes), input);
             assert_eq!(bytes.capacity(), capacity);
             if capacity != 0 {
-                assert_eq!(bytes.as_ptr(), address);
+                assert_eq!(StringBytes::as_bytes(&bytes).as_ptr(), address);
             }
         }
     }

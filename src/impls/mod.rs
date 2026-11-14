@@ -3,7 +3,8 @@ mod pointer;
 mod str;
 
 // Delegate conversions to the inner value, moving it out when ownership allows.
-// This preserves its allocation reuse and UTF-8 validation behavior.
+// String conversions validate before calling these byte conversions so an
+// error can retain the original pointer, even when it has only one owner.
 macro_rules! impl_pointer_conversions_for_sized {
     () => {
         impl_pointer_conversions_for_sized! {
@@ -11,13 +12,6 @@ macro_rules! impl_pointer_conversions_for_sized {
             #[inline]
             fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
                 (*self).into_bytes()
-            }
-
-            /// Moves out the boxed value and uses [`Self::try_into_string`].
-            #[inline]
-            fn box_into_string(self: Box<Self>) -> Result<String, FromUtf8Error> {
-                // Moving out preserves any buffer owned by the inner value.
-                (*self).try_into_string()
             }
         }
     };
@@ -42,28 +36,6 @@ macro_rules! impl_pointer_conversions_for_sized {
             match Arc::try_unwrap(self) {
                 Ok(value) => value.into_bytes(),
                 Err(shared) => (*shared).to_bytes(),
-            }
-        }
-
-        /// Uses [`Self::try_into_string`] when this is the only strong owner,
-        /// or [`Self::try_to_string`] when the value is shared.
-        #[inline]
-        fn rc_into_string(self: Rc<Self>) -> Result<String, FromUtf8Error> {
-            // Weak references do not prevent taking ownership of the value.
-            match Rc::try_unwrap(self) {
-                Ok(value) => value.try_into_string(),
-                Err(shared) => (&*shared).try_to_string(),
-            }
-        }
-
-        /// Uses [`Self::try_into_string`] when this is the only strong owner,
-        /// or [`Self::try_to_string`] when the value is shared.
-        #[inline]
-        fn arc_into_string(self: Arc<Self>) -> Result<String, FromUtf8Error> {
-            // Keep our Arc alive while copying if another strong owner remains.
-            match Arc::try_unwrap(self) {
-                Ok(value) => value.try_into_string(),
-                Err(shared) => (&*shared).try_to_string(),
             }
         }
     };

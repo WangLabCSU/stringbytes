@@ -1,11 +1,9 @@
 use std::borrow::Cow;
 use std::rc::Rc;
-use std::str::Utf8Error;
-use std::string::FromUtf8Error;
 use std::sync::Arc;
 
 use crate::impls::{impl_pointer_conversions_for_sized, impl_string_bytes};
-use crate::{sealed, StringBytes};
+use crate::{sealed, FromUtf8Error, StringBytes, Utf8Error};
 
 impl_string_bytes!(
     /// Uses the string's UTF-8 bytes without validating them again.
@@ -35,7 +33,7 @@ impl_string_bytes!(
 
         /// Clones the string without checking UTF-8.
         #[inline]
-        fn try_to_string(&self) -> Result<String, FromUtf8Error> {
+        fn try_to_string(&self) -> Result<String, Utf8Error> {
             Ok(self.clone())
         }
 
@@ -47,7 +45,7 @@ impl_string_bytes!(
 
         /// Returns this string unchanged, preserving its buffer and capacity.
         #[inline]
-        fn try_into_string(self) -> Result<String, FromUtf8Error> {
+        fn try_into_string(self) -> Result<String, FromUtf8Error<Self>> {
             Ok(self)
         }
 

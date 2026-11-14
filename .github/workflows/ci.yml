@@ -26,10 +26,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Rust
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
-      # Both commands run unit tests and documentation examples.
+      # Each configuration runs unit tests and documentation examples.
       - name: Test default features
         run: cargo test --verbose --locked
-      # Exercise the optional bytes implementations as well.
+      # Check each optional feature independently, then enable both together.
+      - name: Test bytes feature
+        run: cargo test --verbose --features bytes --locked
+      - name: Test simd feature
+        run: cargo test --verbose --features simd --locked
       - name: Test all features
         run: cargo test --verbose --all-features --locked
 
@@ -62,7 +66,7 @@ jobs:
       - name: Check docs.rs documentation
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --no-deps --features bytes --locked
+        run: cargo doc --no-deps --features bytes,simd --locked
       # Pin the generator so its output stays consistent across runs.
       - name: Install cargo-rdme
         run: cargo install cargo-rdme --version 2.2.3 --locked

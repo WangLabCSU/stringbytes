@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 use std::rc::Rc;
-use std::string::FromUtf8Error;
 use std::sync::Arc;
 
 use crate::impls::{impl_pointer_conversions_for_sized, impl_string_bytes};
@@ -388,7 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn try_to_string_cow_slice_borrowed_returns_a_copy_of_invalid_bytes() {
+    fn try_to_string_cow_slice_borrowed_reports_invalid_utf8_without_changing_storage() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -398,13 +397,8 @@ mod tests {
             let source = input;
             let storage: Cow<'_, [u8]> = Cow::Borrowed(source);
             let error = StringBytes::try_to_string(&storage).unwrap_err();
-            assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
-            assert_eq!(error.utf8_error().error_len(), error_len);
-            assert_eq!(error.as_bytes(), input);
-            assert_ne!(
-                error.as_bytes().as_ptr(),
-                StringBytes::as_bytes(&storage).as_ptr()
-            );
+            assert_eq!(error.valid_up_to(), valid_up_to);
+            assert_eq!(error.error_len(), error_len);
             assert_eq!(StringBytes::as_bytes(&storage), input);
         }
     }
@@ -427,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn try_to_string_cow_slice_owned_returns_a_copy_of_invalid_bytes() {
+    fn try_to_string_cow_slice_owned_reports_invalid_utf8_without_changing_storage() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -438,13 +432,8 @@ mod tests {
             source.extend_from_slice(input);
             let storage: Cow<'_, [u8]> = Cow::Owned(source);
             let error = StringBytes::try_to_string(&storage).unwrap_err();
-            assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
-            assert_eq!(error.utf8_error().error_len(), error_len);
-            assert_eq!(error.as_bytes(), input);
-            assert_ne!(
-                error.as_bytes().as_ptr(),
-                StringBytes::as_bytes(&storage).as_ptr()
-            );
+            assert_eq!(error.valid_up_to(), valid_up_to);
+            assert_eq!(error.error_len(), error_len);
             assert_eq!(StringBytes::as_bytes(&storage), input);
         }
     }
@@ -574,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn try_into_string_cow_slice_borrowed_error_copies_storage() {
+    fn try_into_string_cow_slice_borrowed_error_returns_original() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -587,10 +576,11 @@ mod tests {
             let error = StringBytes::try_into_string(storage).unwrap_err();
             assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
             assert_eq!(error.utf8_error().error_len(), error_len);
-            let bytes = error.into_bytes();
-            assert_eq!(bytes, input);
+            let bytes = error.into_inner();
+            assert!(matches!(&bytes, Cow::Borrowed(_)));
+            assert_eq!(StringBytes::as_bytes(&bytes), input);
             if !input.is_empty() {
-                assert_ne!(bytes.as_ptr(), address);
+                assert_eq!(StringBytes::as_bytes(&bytes).as_ptr(), address);
             }
         }
     }
@@ -615,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn try_into_string_cow_slice_owned_error_reuses_buffer() {
+    fn try_into_string_cow_slice_owned_error_keeps_buffer() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -631,11 +621,15 @@ mod tests {
             let error = StringBytes::try_into_string(storage).unwrap_err();
             assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
             assert_eq!(error.utf8_error().error_len(), error_len);
-            let bytes = error.into_bytes();
-            assert_eq!(bytes, input);
-            assert_eq!(bytes.capacity(), capacity);
+            let bytes = error.into_inner();
+            assert!(matches!(&bytes, Cow::Owned(_)));
+            assert_eq!(StringBytes::as_bytes(&bytes), input);
+            let Cow::Owned(buffer) = &bytes else {
+                unreachable!()
+            };
+            assert_eq!(buffer.capacity(), capacity);
             if capacity != 0 {
-                assert_eq!(bytes.as_ptr(), address);
+                assert_eq!(StringBytes::as_bytes(&bytes).as_ptr(), address);
             }
         }
     }

@@ -1,12 +1,10 @@
 use std::borrow::Cow;
 use std::rc::Rc;
-use std::str::Utf8Error;
-use std::string::FromUtf8Error;
 use std::sync::Arc;
 
 use crate::impls::impl_pointer_conversions_for_sized;
 use crate::impls::pointer::impl_string_bytes_for_pointer;
-use crate::{sealed, StringBytes};
+use crate::{sealed, StringBytes, Utf8Error};
 
 impl_string_bytes_for_pointer!(
     /// Borrows the referenced value's current bytes.
@@ -15,17 +13,57 @@ impl_string_bytes_for_pointer!(
     /// conversions. Consuming the reference leaves the value in place;
     /// owned byte and string results copy its contents.
     /// UTF-8 validation follows `T`'s string conversions.
-    &mut T => to_bytes, try_to_string
+    &mut T => to_bytes
 );
 
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
+    use std::cell::RefCell;
 
-    use crate::impls::pointer::fixtures::{
-        CheckedTextOverrides, LossyTextOverride, NoIntermediateCopy, NoPrevalidation,
-    };
     use crate::StringBytes;
+
+    // Records dispatch only; each test asserts its own expected calls.
+    struct RecordingStorage<'a> {
+        bytes: &'a [u8],
+        calls: &'a RefCell<Vec<&'static str>>,
+    }
+
+    impl crate::sealed::Sealed for RecordingStorage<'_> {}
+
+    impl StringBytes for RecordingStorage<'_> {
+        fn as_bytes(&self) -> &[u8] {
+            self.calls.borrow_mut().push("as_bytes");
+            self.bytes
+        }
+
+        fn to_bytes(&self) -> Vec<u8> {
+            self.calls.borrow_mut().push("to_bytes");
+            self.bytes.to_vec()
+        }
+
+        fn into_bytes(self) -> Vec<u8> {
+            self.calls.borrow_mut().push("into_bytes");
+            self.bytes.to_vec()
+        }
+
+        fn try_borrow_str(&self) -> Result<&str, crate::Utf8Error> {
+            self.calls.borrow_mut().push("try_borrow_str");
+            std::str::from_utf8(self.bytes).map_err(crate::Utf8Error::from)
+        }
+
+        fn try_to_string(&self) -> Result<String, crate::Utf8Error> {
+            self.calls.borrow_mut().push("try_to_string");
+            std::str::from_utf8(self.bytes)
+                .map(str::to_owned)
+                .map_err(crate::Utf8Error::from)
+        }
+
+        fn to_string_lossy(&self) -> Cow<'_, str> {
+            self.calls.borrow_mut().push("to_string_lossy");
+            String::from_utf8_lossy(self.bytes)
+        }
+    }
 
     #[test]
     fn as_bytes_mutable_reference_exposes_stable_contents() {
@@ -275,9 +313,15 @@ mod tests {
 
     #[test]
     fn try_borrow_str_mutable_reference_forwards_text_override() {
-        let mut source = CheckedTextOverrides("étext");
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let mut source = RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        };
         let storage = &mut source;
         let value = StringBytes::try_borrow_str(&storage).unwrap();
+        assert_eq!(*calls.borrow(), ["try_borrow_str"]);
         assert_eq!(value, "étext");
     }
 
@@ -329,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn try_to_string_mutable_reference_returns_a_copy_of_invalid_bytes() {
+    fn try_to_string_mutable_reference_reports_invalid_utf8_without_changing_storage() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -339,13 +383,8 @@ mod tests {
             let mut source = input.to_vec();
             let storage = &mut source;
             let error = StringBytes::try_to_string(&storage).unwrap_err();
-            assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
-            assert_eq!(error.utf8_error().error_len(), error_len);
-            assert_eq!(error.as_bytes(), input);
-            assert_ne!(
-                error.as_bytes().as_ptr(),
-                StringBytes::as_bytes(&storage).as_ptr()
-            );
+            assert_eq!(error.valid_up_to(), valid_up_to);
+            assert_eq!(error.error_len(), error_len);
             assert_eq!(StringBytes::as_bytes(&storage), input);
         }
     }
@@ -367,18 +406,17 @@ mod tests {
     }
 
     #[test]
-    fn try_to_string_mutable_reference_forwards_text_override() {
-        let mut source = CheckedTextOverrides("étext");
+    fn try_to_string_mutable_reference_calls_only_inner_override() {
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let mut source = RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        };
         let storage = &mut source;
         let value = StringBytes::try_to_string(&storage).unwrap();
+        assert_eq!(*calls.borrow(), ["try_to_string"]);
         assert_eq!(value, "étext");
-    }
-
-    #[test]
-    fn try_to_string_mutable_reference_does_not_prevalidate() {
-        let mut source = NoPrevalidation("étext".as_bytes());
-        let storage = &mut source;
-        assert_eq!(StringBytes::try_to_string(&storage).unwrap(), "étext");
     }
 
     #[test]
@@ -437,9 +475,15 @@ mod tests {
 
     #[test]
     fn to_string_lossy_mutable_reference_forwards_text_override() {
-        let mut source = LossyTextOverride("étext");
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let mut source = RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        };
         let storage = &mut source;
         let value = StringBytes::to_string_lossy(&storage);
+        assert_eq!(*calls.borrow(), ["to_string_lossy"]);
         assert_eq!(value, "étext");
     }
 
@@ -493,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn try_into_string_mutable_reference_error_copies_storage() {
+    fn try_into_string_mutable_reference_error_returns_original() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -506,10 +550,10 @@ mod tests {
             let error = StringBytes::try_into_string(storage).unwrap_err();
             assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
             assert_eq!(error.utf8_error().error_len(), error_len);
-            let bytes = error.into_bytes();
-            assert_eq!(bytes, input);
+            let bytes = error.into_inner();
+            assert_eq!(StringBytes::as_bytes(&bytes), input);
             if !input.is_empty() {
-                assert_ne!(bytes.as_ptr(), address);
+                assert_eq!(StringBytes::as_bytes(&bytes).as_ptr(), address);
             }
         }
     }
@@ -530,18 +574,51 @@ mod tests {
     }
 
     #[test]
+    fn try_into_string_mutable_reference_can_be_repaired_and_retried() {
+        let mut source = *b"ok\xff";
+        let storage: &mut [u8] = &mut source;
+        let address = storage.as_ptr();
+
+        let error = StringBytes::try_into_string(storage).unwrap_err();
+        let recovered: &mut [u8] = error.into_inner();
+        assert_eq!(recovered.as_ptr(), address);
+        assert_eq!(recovered, b"ok\xff");
+        recovered[2] = b'!';
+
+        assert_eq!(StringBytes::try_into_string(recovered).unwrap(), "ok!");
+        assert_eq!(&source, b"ok!");
+    }
+
+    #[test]
     fn try_into_string_mutable_reference_forwards_text_override() {
-        let mut source = CheckedTextOverrides("étext");
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let mut source = RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        };
         let storage = &mut source;
         let value = StringBytes::try_into_string(storage).unwrap();
+        assert_eq!(*calls.borrow(), ["try_borrow_str", "to_bytes"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
-    fn try_into_string_mutable_reference_does_not_prevalidate() {
-        let mut source = NoPrevalidation("étext".as_bytes());
+    fn try_into_string_mutable_reference_returns_original_without_byte_conversion() {
+        let input = b"ok\xff";
+        let calls = RefCell::new(Vec::new());
+        let mut source = RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        };
         let storage = &mut source;
-        assert_eq!(StringBytes::try_into_string(storage).unwrap(), "étext");
+        let address = input.as_ptr();
+        let error = StringBytes::try_into_string(storage).unwrap_err();
+        assert_eq!(*calls.borrow(), ["try_borrow_str"]);
+        assert_eq!(error.utf8_error().valid_up_to(), 2);
+        let recovered = error.into_inner();
+        assert_eq!(StringBytes::as_bytes(&recovered), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&recovered).as_ptr(), address);
     }
 
     #[test]
@@ -591,17 +668,29 @@ mod tests {
 
     #[test]
     fn into_string_lossy_mutable_reference_forwards_text_override() {
-        let mut source = LossyTextOverride("étext");
+        let input = "étext".as_bytes();
+        let calls = RefCell::new(Vec::new());
+        let mut source = RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        };
         let storage = &mut source;
         let value = StringBytes::into_string_lossy(storage);
+        assert_eq!(*calls.borrow(), ["to_string_lossy", "to_bytes"]);
         assert_eq!(value, "étext");
     }
 
     #[test]
     fn into_string_lossy_mutable_reference_does_not_make_an_intermediate_copy() {
-        let mut source = NoIntermediateCopy(b"a\xffb");
+        let input = b"a\xffb";
+        let calls = RefCell::new(Vec::new());
+        let mut source = RecordingStorage {
+            bytes: input,
+            calls: &calls,
+        };
         let storage = &mut source;
         assert_eq!(StringBytes::into_string_lossy(storage), "a�b");
+        assert_eq!(*calls.borrow(), ["to_string_lossy"]);
     }
 
     #[test]

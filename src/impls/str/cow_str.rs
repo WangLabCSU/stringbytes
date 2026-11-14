@@ -1,11 +1,9 @@
 use std::borrow::Cow;
 use std::rc::Rc;
-use std::str::Utf8Error;
-use std::string::FromUtf8Error;
 use std::sync::Arc;
 
 use crate::impls::{impl_pointer_conversions_for_sized, impl_string_bytes};
-use crate::{sealed, StringBytes};
+use crate::{sealed, FromUtf8Error, StringBytes, Utf8Error};
 
 impl_string_bytes!(
     /// Borrows UTF-8 text from either variant without validating it again.
@@ -35,7 +33,7 @@ impl_string_bytes!(
 
         /// Copies the string without checking UTF-8.
         #[inline]
-        fn try_to_string(&self) -> Result<String, FromUtf8Error> {
+        fn try_to_string(&self) -> Result<String, Utf8Error> {
             // Borrowing first ensures that even an owned String is copied.
             Ok(String::from(self.as_ref()))
         }
@@ -48,7 +46,7 @@ impl_string_bytes!(
 
         /// Reuses an owned string or copies a borrowed string, without checking UTF-8.
         #[inline]
-        fn try_into_string(self) -> Result<String, FromUtf8Error> {
+        fn try_into_string(self) -> Result<String, FromUtf8Error<Self>> {
             Ok(self.into_owned())
         }
 

@@ -12,6 +12,12 @@
 //! Unchecked conversions let callers uphold UTF-8 validity themselves.
 //! Lossy conversions follow the same behavior as [`String::from_utf8_lossy`].
 //!
+//! # Features
+//!
+//! Enable `simd` to use SIMD-accelerated UTF-8 validation where supported.
+//! This feature is disabled by default. Both configurations return the same
+//! [`Utf8Error`] and [`FromUtf8Error`] types.
+//!
 //! # Examples
 //!
 //! ## `&[u8]`
@@ -38,7 +44,7 @@
 //! // SAFETY: bytes still contains the UTF-8 literal above; copy without validation.
 //! let string = unsafe { bytes.to_string_unchecked() };
 //! assert_eq!(string, "hello");
-//! # Ok::<(), std::str::Utf8Error>(())
+//! # Ok::<(), stringbytes::Utf8Error>(())
 //! ```
 //!
 //! ## `Vec<u8>`
@@ -63,7 +69,7 @@
 //! let string = unsafe { bytes.into_string_unchecked() };
 //! assert_eq!(string, "hello");
 //! assert_eq!(string.as_ptr(), address);
-//! # Ok::<(), std::string::FromUtf8Error>(())
+//! # Ok::<(), stringbytes::FromUtf8Error<Vec<u8>>>(())
 //! ```
 //!
 //! ## `Box<[u8]>`
@@ -94,7 +100,7 @@
 //! // Copy the borrowed string without checking UTF-8 again.
 //! let string = text.try_to_string()?;
 //! assert_eq!(string, text);
-//! # Ok::<(), std::string::FromUtf8Error>(())
+//! # Ok::<(), stringbytes::Utf8Error>(())
 //! ```
 //!
 //! ## `String`
@@ -115,7 +121,7 @@
 //! assert_eq!(string, "hello");
 //! assert_eq!(string.as_ptr(), address);
 //! assert_eq!(string.capacity(), capacity);
-//! # Ok::<(), std::string::FromUtf8Error>(())
+//! # Ok::<(), stringbytes::FromUtf8Error<String>>(())
 //! ```
 //!
 //! ## `&CStr`
@@ -131,7 +137,7 @@
 //! // CStr::to_bytes borrows a slice; the trait method copies into a vector.
 //! let bytes: Vec<u8> = StringBytes::to_bytes(text);
 //! assert_eq!(bytes, b"hello");
-//! # Ok::<(), std::str::Utf8Error>(())
+//! # Ok::<(), stringbytes::Utf8Error>(())
 //! ```
 //!
 //! ## `CString`
@@ -151,17 +157,20 @@
 //! // C strings may also contain invalid UTF-8.
 //! let text = CString::from(c"he\xfflo");
 //! assert_eq!(text.into_string_lossy(), "he�lo");
-//! # Ok::<(), std::string::FromUtf8Error>(())
+//! # Ok::<(), stringbytes::FromUtf8Error<CString>>(())
 //! ```
 
 use std::borrow::Cow;
 use std::rc::Rc;
-use std::str::{self, Utf8Error};
-use std::string::FromUtf8Error;
+use std::str;
 use std::sync::Arc;
 
+mod error;
 mod impls;
 mod sealed;
+
+#[doc(inline)]
+pub use error::{FromUtf8Error, Utf8Error};
 
 /// A common interface for string and byte-buffer storage.
 ///
@@ -299,11 +308,20 @@ pub trait StringBytes: sealed::Sealed {
     ///
     /// let bytes = b"hello";
     /// assert_eq!(bytes.try_borrow_str()?, "hello");
-    /// # Ok::<(), std::str::Utf8Error>(())
+    /// # Ok::<(), stringbytes::Utf8Error>(())
     /// ```
     #[inline]
     fn try_borrow_str(&self) -> Result<&str, Utf8Error> {
-        str::from_utf8(self.as_bytes())
+        #[cfg(feature = "simd")]
+        {
+            // compat reports the error position directly, without a second
+            // validation pass through std on invalid input.
+            simdutf8::compat::from_utf8(self.as_bytes()).map_err(Utf8Error::from)
+        }
+        #[cfg(not(feature = "simd"))]
+        {
+            str::from_utf8(self.as_bytes()).map_err(Utf8Error::from)
+        }
     }
 
     /// Borrows the bytes as a string slice without checking UTF-8.
@@ -331,10 +349,13 @@ pub trait StringBytes: sealed::Sealed {
 
     /// Copies the bytes into a [`String`], leaving `self` unchanged.
     ///
+    /// Checks UTF-8 when needed, before copying. Invalid input returns an error
+    /// without allocating or copying the bytes.
+    ///
     /// # Errors
     ///
-    /// Returns [`FromUtf8Error`] containing the copied bytes if they are not
-    /// valid UTF-8.
+    /// Returns [`Utf8Error`] if the bytes are not valid UTF-8. The original bytes
+    /// remain available through `self`.
     ///
     /// # Examples
     ///
@@ -345,12 +366,12 @@ pub trait StringBytes: sealed::Sealed {
     /// let text = bytes.try_to_string()?;
     /// assert_eq!(text, "hi");
     /// assert_eq!(bytes, b"hi");
-    /// # Ok::<(), std::string::FromUtf8Error>(())
+    /// # Ok::<(), stringbytes::Utf8Error>(())
     /// ```
     #[inline]
-    fn try_to_string(&self) -> Result<String, FromUtf8Error> {
-        // Validate the copied buffer so an error can return it to the caller.
-        String::from_utf8(self.to_bytes())
+    fn try_to_string(&self) -> Result<String, Utf8Error> {
+        // The caller still owns the original bytes, so an error needs no copy.
+        self.try_borrow_str().map(str::to_owned)
     }
 
     /// Returns a string, replacing invalid UTF-8 sequences with `�` (U+FFFD).
@@ -370,7 +391,32 @@ pub trait StringBytes: sealed::Sealed {
     /// ```
     #[inline]
     fn to_string_lossy(&self) -> Cow<'_, str> {
-        String::from_utf8_lossy(self.as_bytes())
+        let bytes = self.as_bytes();
+        #[cfg(feature = "simd")]
+        {
+            match simdutf8::compat::from_utf8(bytes) {
+                Ok(text) => Cow::Borrowed(text),
+                Err(error) => {
+                    let (valid, rest) = bytes.split_at(error.valid_up_to());
+                    let mut text = String::with_capacity(bytes.len());
+                    // SAFETY: compat validated the prefix before the first error.
+                    text.push_str(unsafe { str::from_utf8_unchecked(valid) });
+                    // Resume at the first error instead of rescanning the valid
+                    // prefix. utf8_chunks supplies std's replacement boundaries.
+                    for chunk in rest.utf8_chunks() {
+                        text.push_str(chunk.valid());
+                        if !chunk.invalid().is_empty() {
+                            text.push('\u{fffd}');
+                        }
+                    }
+                    Cow::Owned(text)
+                }
+            }
+        }
+        #[cfg(not(feature = "simd"))]
+        {
+            String::from_utf8_lossy(bytes)
+        }
     }
 
     /// Copies the bytes into a [`String`] without checking UTF-8.
@@ -400,14 +446,14 @@ pub trait StringBytes: sealed::Sealed {
 
     /// Converts `self` into a [`String`], consuming the value.
     ///
-    /// Reuses the existing allocation where possible and copies the bytes
-    /// otherwise, as with [`into_bytes`](Self::into_bytes).
+    /// On success, follows the allocation and copying rules of
+    /// [`into_bytes`](Self::into_bytes).
     ///
     /// # Errors
     ///
-    /// Returns [`FromUtf8Error`] for invalid UTF-8. The error keeps the buffer
-    /// used for conversion, following the same allocation rules as a successful
-    /// result. Use [`into_bytes`](FromUtf8Error::into_bytes) to recover the bytes.
+    /// Returns [`FromUtf8Error<Self>`](FromUtf8Error) for invalid UTF-8, retaining
+    /// the original value without converting it or allocating. Use
+    /// [`into_inner`](FromUtf8Error::into_inner) to recover `self`.
     ///
     /// # Examples
     ///
@@ -420,16 +466,23 @@ pub trait StringBytes: sealed::Sealed {
     /// let invalid = vec![0xff];
     /// let error = invalid.try_into_string().unwrap_err();
     /// assert_eq!(error.utf8_error().valid_up_to(), 0);
-    /// assert_eq!(error.into_bytes(), vec![0xff]);
-    /// # Ok::<(), std::string::FromUtf8Error>(())
+    /// assert_eq!(error.into_inner(), vec![0xff]);
+    /// # Ok::<(), stringbytes::FromUtf8Error<Box<[u8]>>>(())
     /// ```
     #[inline]
-    fn try_into_string(self) -> Result<String, FromUtf8Error>
+    fn try_into_string(self) -> Result<String, FromUtf8Error<Self>>
     where
         Self: Sized,
     {
-        // Validate after conversion so an error retains the converted buffer.
-        String::from_utf8(self.into_bytes())
+        // Validate while self is intact so an error can return the original
+        // value, including its pointer ownership or borrowed storage.
+        match self.try_borrow_str() {
+            Ok(_) => {
+                // SAFETY: validation succeeded and into_bytes preserves the bytes.
+                Ok(unsafe { String::from_utf8_unchecked(self.into_bytes()) })
+            }
+            Err(error) => Err(FromUtf8Error::from_parts(self, error)),
+        }
     }
 
     /// Converts `self` into a [`String`], replacing invalid UTF-8 with `�` (U+FFFD).
@@ -533,11 +586,20 @@ pub trait StringBytes: sealed::Sealed {
     ///
     /// # Errors
     ///
-    /// Returns [`FromUtf8Error`] if the stored bytes are not valid UTF-8.
+    /// Returns [`FromUtf8Error`] containing the original pointer if the bytes
+    /// are not valid UTF-8. The pointer is returned unchanged.
     #[doc(hidden)]
     #[inline]
-    fn box_into_string(self: Box<Self>) -> Result<String, FromUtf8Error> {
-        String::from_utf8(self.box_into_bytes())
+    fn box_into_string(self: Box<Self>) -> Result<String, FromUtf8Error<Box<Self>>> {
+        // Keep the pointer intact until validation succeeds; unwrapping first
+        // would prevent returning the original allocation and ownership on error.
+        match self.try_borrow_str() {
+            Ok(_) => {
+                // SAFETY: validation succeeded and box_into_bytes preserves the bytes.
+                Ok(unsafe { String::from_utf8_unchecked(self.box_into_bytes()) })
+            }
+            Err(error) => Err(FromUtf8Error::from_parts(self, error)),
+        }
     }
 
     /// Converts the contents of an [`Rc`] into a [`String`].
@@ -546,11 +608,20 @@ pub trait StringBytes: sealed::Sealed {
     ///
     /// # Errors
     ///
-    /// Returns [`FromUtf8Error`] if the stored bytes are not valid UTF-8.
+    /// Returns [`FromUtf8Error`] containing the original pointer if the bytes
+    /// are not valid UTF-8. The pointer is returned unchanged.
     #[doc(hidden)]
     #[inline]
-    fn rc_into_string(self: Rc<Self>) -> Result<String, FromUtf8Error> {
-        String::from_utf8(self.rc_into_bytes())
+    fn rc_into_string(self: Rc<Self>) -> Result<String, FromUtf8Error<Rc<Self>>> {
+        // Keep the pointer intact until validation succeeds; unwrapping first
+        // would prevent returning the original allocation and ownership on error.
+        match self.try_borrow_str() {
+            Ok(_) => {
+                // SAFETY: validation succeeded and rc_into_bytes preserves the bytes.
+                Ok(unsafe { String::from_utf8_unchecked(self.rc_into_bytes()) })
+            }
+            Err(error) => Err(FromUtf8Error::from_parts(self, error)),
+        }
     }
 
     /// Converts the contents of an [`Arc`] into a [`String`].
@@ -559,17 +630,27 @@ pub trait StringBytes: sealed::Sealed {
     ///
     /// # Errors
     ///
-    /// Returns [`FromUtf8Error`] if the stored bytes are not valid UTF-8.
+    /// Returns [`FromUtf8Error`] containing the original pointer if the bytes
+    /// are not valid UTF-8. The pointer is returned unchanged.
     #[doc(hidden)]
     #[inline]
-    fn arc_into_string(self: Arc<Self>) -> Result<String, FromUtf8Error> {
-        String::from_utf8(self.arc_into_bytes())
+    fn arc_into_string(self: Arc<Self>) -> Result<String, FromUtf8Error<Arc<Self>>> {
+        // Keep the pointer intact until validation succeeds; unwrapping first
+        // would prevent returning the original allocation and ownership on error.
+        match self.try_borrow_str() {
+            Ok(_) => {
+                // SAFETY: validation succeeded and arc_into_bytes preserves the bytes.
+                Ok(unsafe { String::from_utf8_unchecked(self.arc_into_bytes()) })
+            }
+            Err(error) => Err(FromUtf8Error::from_parts(self, error)),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
+    use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Arc;
 
@@ -585,57 +666,79 @@ mod tests {
         }
     }
 
-    struct NoCheckedConversions(&'static [u8]);
+    struct ByteBuffer(Vec<u8>);
 
-    impl super::sealed::Sealed for NoCheckedConversions {}
+    impl super::sealed::Sealed for ByteBuffer {}
 
-    impl StringBytes for NoCheckedConversions {
+    impl StringBytes for ByteBuffer {
         fn as_bytes(&self) -> &[u8] {
-            self.0
-        }
-
-        fn try_borrow_str(&self) -> Result<&str, std::str::Utf8Error> {
-            panic!("unchecked borrowing must not validate UTF-8")
-        }
-
-        fn try_to_string(&self) -> Result<String, std::string::FromUtf8Error> {
-            panic!("unchecked copying must not validate UTF-8")
-        }
-
-        fn try_into_string(self) -> Result<String, std::string::FromUtf8Error> {
-            panic!("unchecked consumption must not validate UTF-8")
-        }
-    }
-
-    struct NoPrevalidation(&'static [u8]);
-
-    impl super::sealed::Sealed for NoPrevalidation {}
-
-    impl StringBytes for NoPrevalidation {
-        fn as_bytes(&self) -> &[u8] {
-            self.0
-        }
-
-        fn try_borrow_str(&self) -> Result<&str, std::str::Utf8Error> {
-            panic!("owned conversion must validate its own buffer")
-        }
-    }
-
-    struct NoIntermediateCopy(&'static [u8]);
-
-    impl super::sealed::Sealed for NoIntermediateCopy {}
-
-    impl StringBytes for NoIntermediateCopy {
-        fn as_bytes(&self) -> &[u8] {
-            self.0
-        }
-
-        fn to_bytes(&self) -> Vec<u8> {
-            panic!("invalid input must not be copied to an intermediate Vec")
+            &self.0
         }
 
         fn into_bytes(self) -> Vec<u8> {
-            panic!("invalid input must not be converted to an intermediate Vec")
+            self.0
+        }
+    }
+
+    struct TrackedConversions<'a> {
+        bytes: &'a [u8],
+        calls: &'a RefCell<Vec<&'static str>>,
+    }
+
+    impl super::sealed::Sealed for TrackedConversions<'_> {}
+
+    impl StringBytes for TrackedConversions<'_> {
+        fn as_bytes(&self) -> &[u8] {
+            self.calls.borrow_mut().push("as_bytes");
+            self.bytes
+        }
+
+        fn to_bytes(&self) -> Vec<u8> {
+            self.calls.borrow_mut().push("to_bytes");
+            self.bytes.to_vec()
+        }
+
+        fn into_bytes(self) -> Vec<u8> {
+            self.calls.borrow_mut().push("into_bytes");
+            self.bytes.to_vec()
+        }
+
+        fn try_borrow_str(&self) -> Result<&str, super::Utf8Error> {
+            self.calls.borrow_mut().push("try_borrow_str");
+            StringBytes::try_borrow_str(self.bytes)
+        }
+    }
+
+    struct CheckedCalls<'a> {
+        bytes: &'a [u8],
+        calls: &'a RefCell<Vec<&'static str>>,
+    }
+
+    impl super::sealed::Sealed for CheckedCalls<'_> {}
+
+    impl StringBytes for CheckedCalls<'_> {
+        fn as_bytes(&self) -> &[u8] {
+            self.bytes
+        }
+
+        fn try_borrow_str(&self) -> Result<&str, super::Utf8Error> {
+            self.calls.borrow_mut().push("try_borrow_str");
+            std::str::from_utf8(self.bytes).map_err(super::Utf8Error::from)
+        }
+
+        fn try_to_string(&self) -> Result<String, super::Utf8Error> {
+            self.calls.borrow_mut().push("try_to_string");
+            std::str::from_utf8(self.bytes)
+                .map(str::to_owned)
+                .map_err(super::Utf8Error::from)
+        }
+
+        fn try_into_string(self) -> Result<String, super::FromUtf8Error<Self>> {
+            self.calls.borrow_mut().push("try_into_string");
+            match std::str::from_utf8(self.bytes) {
+                Ok(text) => Ok(text.to_owned()),
+                Err(error) => Err(super::FromUtf8Error::from_parts(self, error.into())),
+            }
         }
     }
 
@@ -715,6 +818,73 @@ mod tests {
     }
 
     #[test]
+    fn try_borrow_str_default_borrows_valid_text_across_block_boundaries() {
+        for prefix_len in [
+            0, 1, 31, 32, 60, 61, 62, 63, 64, 65, 124, 125, 126, 127, 128, 129,
+        ] {
+            for suffix in [
+                "",
+                "\0",
+                "é",
+                "中",
+                "🦀",
+                "\u{80}\u{7ff}\u{800}\u{d7ff}\u{e000}\u{ffff}\u{10000}\u{10ffff}",
+            ] {
+                let expected = "a".repeat(prefix_len) + suffix;
+                let bytes = expected.as_bytes();
+                let storage = ByteView(bytes);
+                let actual = storage.try_borrow_str().unwrap();
+                assert_eq!(actual, expected);
+                assert!(std::ptr::eq(actual.as_bytes(), bytes));
+            }
+        }
+    }
+
+    #[test]
+    fn try_borrow_str_default_reports_invalid_sequences_at_block_boundaries() {
+        for prefix_len in [0, 60, 61, 62, 63, 64, 65, 124, 125, 126, 127, 128, 129] {
+            for (suffix, error_len) in [
+                (b"\xff".as_slice(), Some(1)),
+                (b"\xc0\x80", Some(1)),
+                (b"\xed\xa0\x80", Some(1)),
+                (b"\xf4\x90\x80\x80", Some(1)),
+                (b"\xe2(\xa1", Some(1)),
+                (b"\xe2\x82(", Some(2)),
+                (b"\xf0\x9f\xa6(", Some(3)),
+                (b"\xe2\x82", None),
+                (b"\xf0\x9f\xa6", None),
+            ] {
+                let mut bytes = vec![b'a'; prefix_len];
+                bytes.extend_from_slice(suffix);
+                let error = ByteView(&bytes).try_borrow_str().unwrap_err();
+                assert_eq!(error.valid_up_to(), prefix_len);
+                assert_eq!(error.error_len(), error_len);
+                assert_eq!(error, std::str::from_utf8(&bytes).unwrap_err().into());
+            }
+        }
+    }
+
+    #[test]
+    fn try_borrow_str_default_matches_std_for_byte_pairs_across_a_block_boundary() {
+        // Sample every byte value next to representative UTF-8 boundary bytes.
+        let mut bytes = vec![b'a'; 128];
+        for first in 0..=u8::MAX {
+            for second in [
+                0, 0x7f, 0x80, 0x8f, 0x90, 0x9f, 0xa0, 0xbf, 0xc0, 0xc2, 0xdf, 0xe0, 0xed, 0xef,
+                0xf0, 0xf4, 0xf5, 0xff,
+            ] {
+                bytes[63] = first;
+                bytes[64] = second;
+                assert_eq!(
+                    ByteView(&bytes).try_borrow_str(),
+                    std::str::from_utf8(&bytes).map_err(super::Utf8Error::from),
+                    "{first:02x} {second:02x}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn borrow_str_unchecked_default_borrows_valid_utf8() {
         for expected in ["", "text", "é说明", "\0e\u{301}"] {
             let input = expected.as_bytes();
@@ -731,9 +901,14 @@ mod tests {
 
     #[test]
     fn borrow_str_unchecked_does_not_call_checked_conversions() {
-        let storage = NoCheckedConversions("étext".as_bytes());
+        let calls = RefCell::new(Vec::new());
+        let storage = CheckedCalls {
+            bytes: "étext".as_bytes(),
+            calls: &calls,
+        };
         // SAFETY: the fixture exposes the valid UTF-8 literal above.
         let value = unsafe { storage.borrow_str_unchecked() };
+        assert!(calls.borrow().is_empty());
         assert_eq!(value, "étext");
     }
 
@@ -753,7 +928,7 @@ mod tests {
     }
 
     #[test]
-    fn try_to_string_default_returns_a_copy_of_invalid_bytes() {
+    fn try_to_string_default_reports_invalid_utf8_without_changing_storage() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -762,30 +937,40 @@ mod tests {
         ] {
             let storage = ByteView(input);
             let error = StringBytes::try_to_string(&storage).unwrap_err();
-            assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
-            assert_eq!(error.utf8_error().error_len(), error_len);
-            assert_eq!(error.as_bytes(), input);
-            assert_ne!(
-                error.as_bytes().as_ptr(),
-                StringBytes::as_bytes(&storage).as_ptr()
-            );
+            assert_eq!(error.valid_up_to(), valid_up_to);
+            assert_eq!(error.error_len(), error_len);
             assert_eq!(StringBytes::as_bytes(&storage), input);
         }
     }
 
     #[test]
-    fn try_to_string_validates_without_preborrowing() {
-        let storage = NoPrevalidation("étext".as_bytes());
-        assert_eq!(storage.try_to_string().unwrap(), "étext");
+    fn try_to_string_default_copies_validated_text_without_to_bytes() {
+        let storage = TrackedConversions {
+            bytes: "étext".as_bytes(),
+            calls: &RefCell::new(Vec::new()),
+        };
+
+        let text = storage.try_to_string().unwrap();
+
+        assert_eq!(*storage.calls.borrow(), ["try_borrow_str"]);
+        assert_eq!(text, "étext");
+        assert_ne!(text.as_ptr(), storage.bytes.as_ptr());
+        assert_eq!(storage.bytes, "étext".as_bytes());
     }
 
     #[test]
-    fn try_to_string_reports_invalid_utf8_without_preborrowing() {
-        let storage = NoPrevalidation(b"ok\xff");
+    fn try_to_string_default_reports_errors_without_to_bytes() {
+        let storage = TrackedConversions {
+            bytes: b"ok\xff",
+            calls: &RefCell::new(Vec::new()),
+        };
+
         let error = storage.try_to_string().unwrap_err();
-        assert_eq!(error.utf8_error().valid_up_to(), 2);
-        assert_eq!(error.utf8_error().error_len(), Some(1));
-        assert_eq!(error.into_bytes(), b"ok\xff");
+
+        assert_eq!(*storage.calls.borrow(), ["try_borrow_str"]);
+        assert_eq!(error.valid_up_to(), 2);
+        assert_eq!(error.error_len(), Some(1));
+        assert_eq!(storage.bytes, b"ok\xff");
     }
 
     #[test]
@@ -823,6 +1008,58 @@ mod tests {
     }
 
     #[test]
+    fn to_string_lossy_default_borrows_valid_text_across_block_boundaries() {
+        for prefix_len in [0, 1, 60, 61, 62, 63, 64, 65, 124, 125, 126, 127, 128, 129] {
+            let expected = "a".repeat(prefix_len) + "é中🦀";
+            let bytes = expected.as_bytes();
+            let storage = ByteView(bytes);
+            let text = storage.to_string_lossy();
+            assert!(matches!(text, Cow::Borrowed(_)));
+            assert_eq!(text, expected);
+            assert!(std::ptr::eq(text.as_bytes(), bytes));
+        }
+    }
+
+    #[test]
+    fn to_string_lossy_default_matches_std_replacements_at_block_boundaries() {
+        for prefix_len in [0, 60, 61, 62, 63, 64, 65, 124, 125, 126, 127, 128, 129] {
+            for (suffix, replacement) in [
+                (b"\xff".as_slice(), "�"),
+                (b"\xc0\x80", "��"),
+                (b"\xed\xa0\x80", "���"),
+                (b"\xe2\x82", "�"),
+                (b"\xe2(\xa1", "�(�"),
+                (b"\xf0\x9f\xa6(", "�("),
+            ] {
+                let mut bytes = vec![b'a'; prefix_len];
+                bytes.extend_from_slice(suffix);
+                let storage = ByteView(&bytes);
+                let text = storage.to_string_lossy();
+                assert!(matches!(text, Cow::Owned(_)));
+                assert_eq!(text, "a".repeat(prefix_len) + replacement);
+                assert_eq!(text, String::from_utf8_lossy(&bytes));
+                assert_eq!(&bytes[prefix_len..], suffix);
+            }
+        }
+    }
+
+    #[test]
+    fn to_string_lossy_default_preserves_unicode_between_multiple_errors() {
+        let prefix = "é中🦀".repeat(8);
+        let mut bytes = prefix.as_bytes().to_vec();
+        bytes.push(0xff);
+        bytes.extend_from_slice("中🦀".as_bytes());
+        bytes.extend_from_slice(b"\xc0\x80ok\xe2\x82");
+        let storage = ByteView(&bytes);
+
+        let text = storage.to_string_lossy();
+
+        assert!(matches!(text, Cow::Owned(_)));
+        assert_eq!(text, format!("{prefix}�中🦀��ok�"));
+        assert_eq!(text, String::from_utf8_lossy(&bytes));
+    }
+
+    #[test]
     fn to_string_unchecked_default_copies_valid_utf8() {
         for expected in ["", "text", "é说明", "\0e\u{301}"] {
             let input = expected.as_bytes();
@@ -840,9 +1077,14 @@ mod tests {
 
     #[test]
     fn to_string_unchecked_does_not_call_checked_conversions() {
-        let storage = NoCheckedConversions("étext".as_bytes());
+        let calls = RefCell::new(Vec::new());
+        let storage = CheckedCalls {
+            bytes: "étext".as_bytes(),
+            calls: &calls,
+        };
         // SAFETY: the fixture exposes the valid UTF-8 literal above.
         let value = unsafe { storage.to_string_unchecked() };
+        assert!(calls.borrow().is_empty());
         assert_eq!(value, "étext");
     }
 
@@ -861,7 +1103,7 @@ mod tests {
     }
 
     #[test]
-    fn try_into_string_default_error_copies_storage() {
+    fn try_into_string_default_error_returns_original() {
         for (input, valid_up_to, error_len) in [
             (b"ok\xff".as_slice(), 2, Some(1)),
             (b"ok\xe2\x82", 2, None),
@@ -873,27 +1115,75 @@ mod tests {
             let error = StringBytes::try_into_string(storage).unwrap_err();
             assert_eq!(error.utf8_error().valid_up_to(), valid_up_to);
             assert_eq!(error.utf8_error().error_len(), error_len);
-            let bytes = error.into_bytes();
-            assert_eq!(bytes, input);
+            let bytes = error.into_inner();
+            assert_eq!(StringBytes::as_bytes(&bytes), input);
             if !input.is_empty() {
-                assert_ne!(bytes.as_ptr(), address);
+                assert_eq!(StringBytes::as_bytes(&bytes).as_ptr(), address);
             }
         }
     }
 
     #[test]
-    fn try_into_string_validates_without_preborrowing() {
-        let storage = NoPrevalidation("étext".as_bytes());
+    fn try_into_string_validates_before_converting_bytes() {
+        let calls = RefCell::new(Vec::new());
+        let storage = TrackedConversions {
+            bytes: "étext".as_bytes(),
+            calls: &calls,
+        };
+
         assert_eq!(storage.try_into_string().unwrap(), "étext");
+        assert_eq!(*calls.borrow(), ["try_borrow_str", "into_bytes"]);
     }
 
     #[test]
-    fn try_into_string_reports_invalid_utf8_without_preborrowing() {
-        let storage = NoPrevalidation(b"ok\xff");
+    fn try_into_string_returns_original_without_converting_bytes() {
+        let calls = RefCell::new(Vec::new());
+        let storage = TrackedConversions {
+            bytes: b"ok\xff",
+            calls: &calls,
+        };
         let error = storage.try_into_string().unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 2);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        assert_eq!(error.into_bytes(), b"ok\xff");
+        let recovered = error.into_inner();
+        assert_eq!(recovered.bytes, b"ok\xff");
+        assert_eq!(*calls.borrow(), ["try_borrow_str"]);
+    }
+
+    #[test]
+    fn try_into_string_default_keeps_valid_buffers_and_spare_capacity() {
+        for prefix_len in [0, 1, 60, 61, 62, 63, 64, 65, 124, 125, 126, 127, 128, 129] {
+            let expected = "a".repeat(prefix_len) + "é中🦀";
+            let mut bytes = Vec::with_capacity(expected.len() + 32);
+            bytes.extend_from_slice(expected.as_bytes());
+            let address = bytes.as_ptr();
+            let capacity = bytes.capacity();
+            let text = ByteBuffer(bytes).try_into_string().unwrap();
+            assert_eq!(text, expected);
+            assert_eq!(text.as_ptr(), address);
+            assert_eq!(text.capacity(), capacity);
+        }
+    }
+
+    #[test]
+    fn try_into_string_default_keeps_invalid_buffers_and_error_details() {
+        for prefix_len in [0, 62, 63, 64, 65, 126, 127, 128, 129] {
+            for (suffix, error_len) in [(b"\xff".as_slice(), Some(1)), (b"\xe2\x82", None)] {
+                let mut expected = vec![b'a'; prefix_len];
+                expected.extend_from_slice(suffix);
+                let mut bytes = Vec::with_capacity(expected.len() + 32);
+                bytes.extend_from_slice(&expected);
+                let address = StringBytes::as_bytes(&bytes).as_ptr();
+                let capacity = bytes.capacity();
+                let error = ByteBuffer(bytes).try_into_string().unwrap_err();
+                assert_eq!(error.utf8_error().valid_up_to(), prefix_len);
+                assert_eq!(error.utf8_error().error_len(), error_len);
+                let bytes = error.into_inner();
+                assert_eq!(StringBytes::as_bytes(&bytes), &expected[..]);
+                assert_eq!(StringBytes::as_bytes(&bytes).as_ptr(), address);
+                assert_eq!(bytes.0.capacity(), capacity);
+            }
+        }
     }
 
     #[test]
@@ -932,8 +1222,13 @@ mod tests {
             (b"\xc0\x80", "��"),
             (b"\xed\xa0\x80", "���"),
         ] {
-            let storage = NoIntermediateCopy(input);
+            let calls = RefCell::new(Vec::new());
+            let storage = TrackedConversions {
+                bytes: input,
+                calls: &calls,
+            };
             assert_eq!(storage.into_string_lossy(), expected);
+            assert_eq!(*calls.borrow(), ["as_bytes"]);
         }
     }
 
@@ -954,9 +1249,14 @@ mod tests {
 
     #[test]
     fn into_string_unchecked_does_not_call_checked_conversions() {
-        let storage = NoCheckedConversions("étext".as_bytes());
+        let calls = RefCell::new(Vec::new());
+        let storage = CheckedCalls {
+            bytes: "étext".as_bytes(),
+            calls: &calls,
+        };
         // SAFETY: the fixture exposes the valid UTF-8 literal above.
         let value = unsafe { storage.into_string_unchecked() };
+        assert!(calls.borrow().is_empty());
         assert_eq!(value, "étext");
     }
 
@@ -997,15 +1297,15 @@ mod tests {
     }
 
     #[test]
-    fn box_into_string_default_error_copies_bytes() {
+    fn box_into_string_default_error_returns_original() {
         let storage = Box::new(ByteView(b"ok\xff"));
         let address = StringBytes::as_bytes(&storage).as_ptr();
         let error = StringBytes::box_into_string(storage).unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 2);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        let value = error.into_bytes();
-        assert_eq!(value, b"ok\xff");
-        assert_ne!(value.as_ptr(), address);
+        let value = error.into_inner();
+        assert_eq!(StringBytes::as_bytes(&value), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&value).as_ptr(), address);
     }
 
     #[test]
@@ -1018,15 +1318,15 @@ mod tests {
     }
 
     #[test]
-    fn rc_into_string_default_error_copies_bytes() {
+    fn rc_into_string_default_error_returns_original() {
         let storage = Rc::new(ByteView(b"ok\xff"));
         let address = StringBytes::as_bytes(&storage).as_ptr();
         let error = StringBytes::rc_into_string(storage).unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 2);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        let value = error.into_bytes();
-        assert_eq!(value, b"ok\xff");
-        assert_ne!(value.as_ptr(), address);
+        let value = error.into_inner();
+        assert_eq!(StringBytes::as_bytes(&value), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&value).as_ptr(), address);
     }
 
     #[test]
@@ -1039,14 +1339,14 @@ mod tests {
     }
 
     #[test]
-    fn arc_into_string_default_error_copies_bytes() {
+    fn arc_into_string_default_error_returns_original() {
         let storage = Arc::new(ByteView(b"ok\xff"));
         let address = StringBytes::as_bytes(&storage).as_ptr();
         let error = StringBytes::arc_into_string(storage).unwrap_err();
         assert_eq!(error.utf8_error().valid_up_to(), 2);
         assert_eq!(error.utf8_error().error_len(), Some(1));
-        let value = error.into_bytes();
-        assert_eq!(value, b"ok\xff");
-        assert_ne!(value.as_ptr(), address);
+        let value = error.into_inner();
+        assert_eq!(StringBytes::as_bytes(&value), b"ok\xff");
+        assert_eq!(StringBytes::as_bytes(&value).as_ptr(), address);
     }
 }
