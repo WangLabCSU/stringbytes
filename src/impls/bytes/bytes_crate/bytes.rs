@@ -7,20 +7,34 @@ use ::bytes::Bytes;
 use crate::impls::{impl_pointer_conversions_for_sized, impl_string_bytes};
 use crate::{sealed, StringBytes};
 
-impl_string_bytes!(Bytes {
-    #[inline]
-    fn as_bytes(&self) -> &[u8] {
-        self.as_ref()
-    }
+impl_string_bytes!(
+    /// Borrows the bytes visible through this buffer.
+    ///
+    /// [`into_bytes`](StringBytes::into_bytes) uses the buffer's conversion to
+    /// [`Vec<u8>`]. A uniquely owned, transferable allocation is reused;
+    /// static data, shared buffers, and [`Bytes::from_owner`] storage are copied.
+    /// Converting a sliced buffer may move its bytes within the allocation.
+    ///
+    /// Checked and lossy string conversions validate UTF-8.
+    Bytes {
+        /// Borrows the bytes visible through this buffer.
+        #[inline]
+        fn as_bytes(&self) -> &[u8] {
+            self.as_ref()
+        }
 
-    #[inline]
-    fn into_bytes(self) -> Vec<u8> {
-        // Let bytes decide whether its backing storage can be reused.
-        Vec::from(self)
-    }
+        /// Converts the visible bytes using [`Vec::from`].
+        ///
+        /// Allocation reuse depends on the buffer's ownership and backing storage.
+        #[inline]
+        fn into_bytes(self) -> Vec<u8> {
+            // Let bytes decide whether its backing storage can be reused.
+            Vec::from(self)
+        }
 
-    impl_pointer_conversions_for_sized!();
-});
+        impl_pointer_conversions_for_sized!();
+    }
+);
 
 #[cfg(test)]
 mod tests {

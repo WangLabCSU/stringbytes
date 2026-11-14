@@ -7,21 +7,35 @@ use ::bytes::BytesMut;
 use crate::impls::{impl_pointer_conversions_for_sized, impl_string_bytes};
 use crate::{sealed, StringBytes};
 
-impl_string_bytes!(BytesMut {
-    #[inline]
-    fn as_bytes(&self) -> &[u8] {
-        self.as_ref()
-    }
+impl_string_bytes!(
+    /// Borrows the bytes in the buffer's current view.
+    ///
+    /// [`into_bytes`](StringBytes::into_bytes) uses the buffer's conversion to
+    /// [`Vec<u8>`], reusing its allocation when it is no longer shared.
+    /// A split buffer is copied while another view shares its allocation.
+    /// Reusing an allocation may move the bytes back to its beginning.
+    ///
+    /// Checked and lossy string conversions validate UTF-8.
+    BytesMut {
+        /// Borrows the bytes in the buffer's current view.
+        #[inline]
+        fn as_bytes(&self) -> &[u8] {
+            self.as_ref()
+        }
 
-    #[inline]
-    fn into_bytes(self) -> Vec<u8> {
-        // Split buffers may still share an allocation. Vec::from handles
-        // that sharing and any offset into the original buffer.
-        Vec::from(self)
-    }
+        /// Converts the current view using [`Vec::from`].
+        ///
+        /// An unshared allocation is reused; bytes may move within it.
+        #[inline]
+        fn into_bytes(self) -> Vec<u8> {
+            // Split buffers may still share an allocation. Vec::from handles
+            // that sharing and any offset into the original buffer.
+            Vec::from(self)
+        }
 
-    impl_pointer_conversions_for_sized!();
-});
+        impl_pointer_conversions_for_sized!();
+    }
+);
 
 #[cfg(test)]
 mod tests {

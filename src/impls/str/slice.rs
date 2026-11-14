@@ -8,54 +8,73 @@ use crate::impls::impl_string_bytes;
 use crate::{sealed, StringBytes};
 
 // str is unsized, so consuming conversions use owning pointer receivers.
-impl_string_bytes!(str {
-    #[inline]
-    fn as_bytes(&self) -> &[u8] {
-        str::as_bytes(self)
-    }
+impl_string_bytes!(
+    /// Borrows UTF-8 text without validating it again.
+    ///
+    /// Checked string conversions always succeed, and
+    /// [`to_string_lossy`](StringBytes::to_string_lossy) returns a borrowed string.
+    /// Owned results copy the text when using a reference,
+    /// [`Rc<str>`](Rc), or [`Arc<str>`](Arc).
+    /// [`Box<str>`] transfers its allocation when consumed into bytes or a string.
+    str {
+        /// Borrows the UTF-8 bytes of this string slice.
+        #[inline]
+        fn as_bytes(&self) -> &[u8] {
+            str::as_bytes(self)
+        }
 
-    #[inline]
-    fn try_borrow_str(&self) -> Result<&str, Utf8Error> {
-        Ok(self)
-    }
+        /// Returns this string slice without checking UTF-8.
+        #[inline]
+        fn try_borrow_str(&self) -> Result<&str, Utf8Error> {
+            Ok(self)
+        }
 
-    #[inline]
-    fn try_to_string(&self) -> Result<String, FromUtf8Error> {
-        Ok(self.to_owned())
-    }
+        /// Copies this string without checking UTF-8.
+        #[inline]
+        fn try_to_string(&self) -> Result<String, FromUtf8Error> {
+            Ok(self.to_owned())
+        }
 
-    #[inline]
-    fn to_string_lossy(&self) -> Cow<'_, str> {
-        Cow::Borrowed(self)
-    }
+        /// Borrows this string without allocating or checking UTF-8.
+        #[inline]
+        fn to_string_lossy(&self) -> Cow<'_, str> {
+            Cow::Borrowed(self)
+        }
 
-    /// Converts the boxed string into bytes, reusing its allocation.
-    #[inline]
-    fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
-        <[u8]>::into_vec(self.into_boxed_bytes())
-    }
+        /// Converts the boxed string into bytes, reusing its allocation.
+        #[inline]
+        fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
+            <[u8]>::into_vec(self.into_boxed_bytes())
+        }
 
-    /// Converts the boxed string into a [`String`] without reallocating or
-    /// checking UTF-8 again.
-    #[inline]
-    fn box_into_string(self: Box<Self>) -> Result<String, FromUtf8Error> {
-        // String::from takes over the Box's allocation.
-        Ok(String::from(self))
-    }
+        /// Converts the boxed string into a [`String`] without reallocating or
+        /// checking UTF-8 again.
+        #[inline]
+        fn box_into_string(self: Box<Self>) -> Result<String, FromUtf8Error> {
+            // String::from takes over the Box's allocation.
+            Ok(String::from(self))
+        }
 
-    // Rc<str> and Arc<str> store reference counts alongside the bytes.
-    // Their allocations cannot be transferred to String, so these
-    // conversions copy even when only one strong reference remains.
-    #[inline]
-    fn rc_into_string(self: Rc<Self>) -> Result<String, FromUtf8Error> {
-        Ok(String::from(&*self))
-    }
+        // Rc<str> and Arc<str> store reference counts alongside the bytes.
+        // Their allocations cannot be transferred to String, so these
+        // conversions copy even when only one strong reference remains.
+        /// Copies the shared string without checking UTF-8.
+        ///
+        /// The allocation is not reused, even with only one strong owner.
+        #[inline]
+        fn rc_into_string(self: Rc<Self>) -> Result<String, FromUtf8Error> {
+            Ok(String::from(&*self))
+        }
 
-    #[inline]
-    fn arc_into_string(self: Arc<Self>) -> Result<String, FromUtf8Error> {
-        Ok(String::from(&*self))
+        /// Copies the shared string without checking UTF-8.
+        ///
+        /// The allocation is not reused, even with only one strong owner.
+        #[inline]
+        fn arc_into_string(self: Arc<Self>) -> Result<String, FromUtf8Error> {
+            Ok(String::from(&*self))
+        }
     }
-});
+);
 
 #[cfg(test)]
 mod tests {

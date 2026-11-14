@@ -6,20 +6,31 @@ use std::sync::Arc;
 use crate::impls::{impl_pointer_conversions_for_sized, impl_string_bytes};
 use crate::{sealed, StringBytes};
 
-impl_string_bytes!(Cow<'_, Vec<u8>> {
-    #[inline]
-    fn as_bytes(&self) -> &[u8] {
-        self.as_ref().as_slice()
-    }
+impl_string_bytes!(
+    /// Borrows the initialized bytes of the borrowed or owned vector.
+    ///
+    /// [`into_bytes`](StringBytes::into_bytes) returns an owned vector unchanged
+    /// or clones a borrowed vector. [`to_bytes`](StringBytes::to_bytes) copies
+    /// the bytes in either case.
+    ///
+    /// Checked and lossy string conversions validate UTF-8.
+    Cow<'_, Vec<u8>> {
+        /// Borrows the initialized bytes of the borrowed or owned vector.
+        #[inline]
+        fn as_bytes(&self) -> &[u8] {
+            self.as_ref().as_slice()
+        }
 
-    #[inline]
-    fn into_bytes(self) -> Vec<u8> {
-        // Reuse an owned Vec, including its spare capacity.
-        self.into_owned()
-    }
+        /// Returns an owned vector unchanged or clones a borrowed vector.
+        #[inline]
+        fn into_bytes(self) -> Vec<u8> {
+            // Reuse an owned Vec, including its spare capacity.
+            self.into_owned()
+        }
 
-    impl_pointer_conversions_for_sized!();
-});
+        impl_pointer_conversions_for_sized!();
+    }
+);
 
 #[cfg(test)]
 // Cow<Vec<u8>> has its own implementation to exercise.

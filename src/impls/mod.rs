@@ -2,19 +2,18 @@ mod bytes;
 mod pointer;
 mod str;
 
-// Sized contents can delegate conversions to the inner value. Boxed arrays
-// instead transfer their own allocation.
-// Delegating string conversions preserves the inner type's UTF-8 fast path,
-// so wrappers around String, Cow<str>, or Cow<String> do not introduce
-// another check.
+// Delegate conversions to the inner value, moving it out when ownership allows.
+// This preserves its allocation reuse and UTF-8 validation behavior.
 macro_rules! impl_pointer_conversions_for_sized {
     () => {
         impl_pointer_conversions_for_sized! {
+            /// Moves out the boxed value and uses [`Self::into_bytes`].
             #[inline]
             fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
                 (*self).into_bytes()
             }
 
+            /// Moves out the boxed value and uses [`Self::try_into_string`].
             #[inline]
             fn box_into_string(self: Box<Self>) -> Result<String, FromUtf8Error> {
                 // Moving out preserves any buffer owned by the inner value.
@@ -26,6 +25,8 @@ macro_rules! impl_pointer_conversions_for_sized {
     ($($box_conversion:item)+) => {
         $($box_conversion)+
 
+        /// Uses [`Self::into_bytes`] when this is the only strong owner,
+        /// or [`Self::to_bytes`] when the value is shared.
         #[inline]
         fn rc_into_bytes(self: Rc<Self>) -> Vec<u8> {
             match Rc::try_unwrap(self) {
@@ -34,6 +35,8 @@ macro_rules! impl_pointer_conversions_for_sized {
             }
         }
 
+        /// Uses [`Self::into_bytes`] when this is the only strong owner,
+        /// or [`Self::to_bytes`] when the value is shared.
         #[inline]
         fn arc_into_bytes(self: Arc<Self>) -> Vec<u8> {
             match Arc::try_unwrap(self) {
@@ -42,6 +45,8 @@ macro_rules! impl_pointer_conversions_for_sized {
             }
         }
 
+        /// Uses [`Self::try_into_string`] when this is the only strong owner,
+        /// or [`Self::try_to_string`] when the value is shared.
         #[inline]
         fn rc_into_string(self: Rc<Self>) -> Result<String, FromUtf8Error> {
             // Weak references do not prevent taking ownership of the value.
@@ -51,6 +56,8 @@ macro_rules! impl_pointer_conversions_for_sized {
             }
         }
 
+        /// Uses [`Self::try_into_string`] when this is the only strong owner,
+        /// or [`Self::try_to_string`] when the value is shared.
         #[inline]
         fn arc_into_string(self: Arc<Self>) -> Result<String, FromUtf8Error> {
             // Keep our Arc alive while copying if another strong owner remains.
@@ -63,18 +70,20 @@ macro_rules! impl_pointer_conversions_for_sized {
 }
 
 // Keep Sealed and StringBytes implementations together, with every method
-// written at the call site. Generic parameters go in brackets before the type,
+// written at the call site. Attributes document the StringBytes implementation.
+// Generic parameters go in brackets before the type,
 // as in [const N: usize]; [u8; N].
 macro_rules! impl_string_bytes {
-    ([$($($generics:tt)+)?]; $storage:ty { $($methods:item)* }) => {
+    ($(#[$attr:meta])* [$($($generics:tt)+)?]; $storage:ty { $($methods:item)* }) => {
         impl $(<$($generics)+>)? sealed::Sealed for $storage {}
 
+        $(#[$attr])*
         impl $(<$($generics)+>)? StringBytes for $storage {
             $($methods)*
         }
     };
-    ($storage:ty { $($methods:item)* }) => {
-        impl_string_bytes!([]; $storage { $($methods)* });
+    ($(#[$attr:meta])* $storage:ty { $($methods:item)* }) => {
+        impl_string_bytes!($(#[$attr])* []; $storage { $($methods)* });
     };
 }
 

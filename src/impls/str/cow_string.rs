@@ -7,39 +7,53 @@ use std::sync::Arc;
 use crate::impls::{impl_pointer_conversions_for_sized, impl_string_bytes};
 use crate::{sealed, StringBytes};
 
-impl_string_bytes!(Cow<'_, String> {
-    #[inline]
-    fn as_bytes(&self) -> &[u8] {
-        self.as_ref().as_bytes()
-    }
+impl_string_bytes!(
+    /// Borrows UTF-8 text from the borrowed or owned string without revalidation.
+    ///
+    /// Consuming conversions reuse an owned string's buffer and capacity,
+    /// or clone a borrowed string. Copying conversions copy either variant.
+    /// Checked string conversions always succeed, and
+    /// [`to_string_lossy`](StringBytes::to_string_lossy) returns a borrowed string.
+    Cow<'_, String> {
+        /// Borrows the UTF-8 bytes of the borrowed or owned string.
+        #[inline]
+        fn as_bytes(&self) -> &[u8] {
+            self.as_ref().as_bytes()
+        }
 
-    #[inline]
-    fn into_bytes(self) -> Vec<u8> {
-        String::into_bytes(self.into_owned())
-    }
+        /// Reuses an owned string's buffer and capacity, or clones a borrowed string.
+        #[inline]
+        fn into_bytes(self) -> Vec<u8> {
+            String::into_bytes(self.into_owned())
+        }
 
-    #[inline]
-    fn try_borrow_str(&self) -> Result<&str, Utf8Error> {
-        Ok(self.as_ref().as_str())
-    }
+        /// Borrows the string without checking UTF-8.
+        #[inline]
+        fn try_borrow_str(&self) -> Result<&str, Utf8Error> {
+            Ok(self.as_ref().as_str())
+        }
 
-    #[inline]
-    fn try_to_string(&self) -> Result<String, FromUtf8Error> {
-        Ok(self.as_ref().clone())
-    }
+        /// Copies the string without checking UTF-8.
+        #[inline]
+        fn try_to_string(&self) -> Result<String, FromUtf8Error> {
+            Ok(self.as_ref().clone())
+        }
 
-    #[inline]
-    fn to_string_lossy(&self) -> Cow<'_, str> {
-        Cow::Borrowed(self.as_ref().as_str())
-    }
+        /// Borrows the string without allocating or checking UTF-8.
+        #[inline]
+        fn to_string_lossy(&self) -> Cow<'_, str> {
+            Cow::Borrowed(self.as_ref().as_str())
+        }
 
-    #[inline]
-    fn try_into_string(self) -> Result<String, FromUtf8Error> {
-        Ok(self.into_owned())
-    }
+        /// Reuses an owned string or copies a borrowed string, without checking UTF-8.
+        #[inline]
+        fn try_into_string(self) -> Result<String, FromUtf8Error> {
+            Ok(self.into_owned())
+        }
 
-    impl_pointer_conversions_for_sized!();
-});
+        impl_pointer_conversions_for_sized!();
+    }
+);
 
 #[cfg(test)]
 // Cow<String> has its own implementation to exercise.

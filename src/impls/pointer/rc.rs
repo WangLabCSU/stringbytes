@@ -8,7 +8,17 @@ use crate::impls::impl_pointer_conversions_for_sized;
 use crate::impls::pointer::impl_string_bytes_for_pointer;
 use crate::{sealed, StringBytes};
 
-impl_string_bytes_for_pointer!(Rc<T> => rc_into_bytes, rc_into_string);
+impl_string_bytes_for_pointer!(
+    /// Borrows the shared value's bytes and delegates string conversions to `T`.
+    ///
+    /// Consuming conversions reuse an inner buffer when there is only one
+    /// strong owner and `T` can transfer that buffer. Additional strong owners
+    /// require a copy; [`Weak`](std::rc::Weak) pointers do not prevent reuse.
+    /// Inline and unsized contents are copied.
+    ///
+    /// UTF-8 validation follows `T`'s string conversions.
+    Rc<T> => rc_into_bytes, rc_into_string
+);
 
 #[cfg(test)]
 mod tests {

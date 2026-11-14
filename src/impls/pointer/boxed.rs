@@ -8,7 +8,15 @@ use crate::impls::impl_pointer_conversions_for_sized;
 use crate::impls::pointer::impl_string_bytes_for_pointer;
 use crate::{sealed, StringBytes};
 
-impl_string_bytes_for_pointer!(Box<T> => box_into_bytes, box_into_string);
+impl_string_bytes_for_pointer!(
+    /// Borrows the boxed value's bytes and delegates string conversions to `T`.
+    ///
+    /// Consuming conversions transfer the box's allocation or an inner buffer
+    /// when `T` supports it, and copy the bytes otherwise.
+    /// Copying conversions leave the boxed value unchanged.
+    /// UTF-8 validation follows `T`'s string conversions.
+    Box<T> => box_into_bytes, box_into_string
+);
 
 #[cfg(test)]
 mod tests {

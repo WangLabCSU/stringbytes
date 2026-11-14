@@ -1,19 +1,29 @@
 use crate::impls::impl_string_bytes;
 use crate::{sealed, StringBytes};
 
-impl_string_bytes!([u8] {
-    #[inline]
-    fn as_bytes(&self) -> &[u8] {
-        self
-    }
+impl_string_bytes!(
+    /// Borrows the bytes of a slice.
+    ///
+    /// [`into_bytes`](StringBytes::into_bytes) reuses the allocation of a
+    /// [`Box<[u8]>`](Box). References, [`Rc<[u8]>`](std::rc::Rc), and
+    /// [`Arc<[u8]>`](std::sync::Arc) copy the bytes when consumed.
+    ///
+    /// Checked and lossy string conversions validate UTF-8.
+    [u8] {
+        /// Returns this byte slice.
+        #[inline]
+        fn as_bytes(&self) -> &[u8] {
+            self
+        }
 
-    /// Converts the boxed slice into a vector, reusing its allocation.
-    #[inline]
-    fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
-        // Use the slice's inherent method to transfer the allocation.
-        <[u8]>::into_vec(self)
+        /// Converts the boxed slice into a vector, reusing its allocation.
+        #[inline]
+        fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
+            // Use the slice's inherent method to transfer the allocation.
+            <[u8]>::into_vec(self)
+        }
     }
-});
+);
 
 #[cfg(test)]
 mod tests {

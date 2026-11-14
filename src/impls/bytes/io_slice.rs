@@ -3,14 +3,22 @@ use std::io::IoSlice;
 use crate::impls::impl_string_bytes;
 use crate::{sealed, StringBytes};
 
-// I/O slices borrow their buffers. The default conversions copy the current
-// view, even when the wrapper is consumed through Box, Rc, or Arc.
-impl_string_bytes!(IoSlice<'_> {
-    #[inline]
-    fn as_bytes(&self) -> &[u8] {
-        self
+impl_string_bytes!(
+    /// Borrows the bytes in the current I/O view.
+    ///
+    /// After [`IoSlice::advance`], conversions use only the remaining bytes.
+    /// Owned conversions copy this view, including when consuming a [`Box`],
+    /// [`Rc`](std::rc::Rc), or [`Arc`](std::sync::Arc) containing the slice.
+    ///
+    /// Checked and lossy string conversions validate UTF-8.
+    IoSlice<'_> {
+        /// Borrows the remaining bytes of the I/O view.
+        #[inline]
+        fn as_bytes(&self) -> &[u8] {
+            self
+        }
     }
-});
+);
 
 #[cfg(test)]
 mod tests {

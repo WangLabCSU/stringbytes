@@ -3,12 +3,23 @@ use std::io::IoSliceMut;
 use crate::impls::impl_string_bytes;
 use crate::{sealed, StringBytes};
 
-impl_string_bytes!(IoSliceMut<'_> {
-    #[inline]
-    fn as_bytes(&self) -> &[u8] {
-        self
+impl_string_bytes!(
+    /// Borrows the bytes in the current mutable I/O view.
+    ///
+    /// Edits through the view are reflected by [`as_bytes`](StringBytes::as_bytes).
+    /// After [`IoSliceMut::advance`], conversions use only the remaining bytes.
+    /// Owned conversions copy this view, including when consuming a [`Box`],
+    /// [`Rc`](std::rc::Rc), or [`Arc`](std::sync::Arc) containing the slice.
+    ///
+    /// Checked and lossy string conversions validate UTF-8.
+    IoSliceMut<'_> {
+        /// Borrows the remaining bytes of the mutable I/O view.
+        #[inline]
+        fn as_bytes(&self) -> &[u8] {
+            self
+        }
     }
-});
+);
 
 #[cfg(test)]
 mod tests {

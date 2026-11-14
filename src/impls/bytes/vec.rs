@@ -5,19 +5,29 @@ use std::sync::Arc;
 use crate::impls::{impl_pointer_conversions_for_sized, impl_string_bytes};
 use crate::{sealed, StringBytes};
 
-impl_string_bytes!(Vec<u8> {
-    #[inline]
-    fn as_bytes(&self) -> &[u8] {
-        self.as_slice()
-    }
+impl_string_bytes!(
+    /// Uses the vector's initialized bytes, excluding spare capacity.
+    ///
+    /// [`into_bytes`](StringBytes::into_bytes) returns the vector unchanged.
+    /// [`try_into_string`](StringBytes::try_into_string) validates UTF-8 and
+    /// keeps the buffer and capacity, including when conversion returns an error.
+    /// Borrowing and copying string conversions also validate UTF-8.
+    Vec<u8> {
+        /// Borrows the initialized bytes of the vector.
+        #[inline]
+        fn as_bytes(&self) -> &[u8] {
+            self.as_slice()
+        }
 
-    #[inline]
-    fn into_bytes(self) -> Vec<u8> {
-        self
-    }
+        /// Returns this vector unchanged, preserving its buffer and capacity.
+        #[inline]
+        fn into_bytes(self) -> Vec<u8> {
+            self
+        }
 
-    impl_pointer_conversions_for_sized!();
-});
+        impl_pointer_conversions_for_sized!();
+    }
+);
 
 #[cfg(test)]
 mod tests {

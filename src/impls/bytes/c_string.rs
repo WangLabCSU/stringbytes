@@ -6,22 +6,33 @@ use std::sync::Arc;
 use crate::impls::{impl_pointer_conversions_for_sized, impl_string_bytes};
 use crate::{sealed, StringBytes};
 
-impl_string_bytes!(CString {
-    /// Returns the bytes without the trailing NUL, as in [`CString::as_bytes`].
-    #[inline]
-    fn as_bytes(&self) -> &[u8] {
-        CString::as_bytes(self)
-    }
+impl_string_bytes!(
+    /// Exposes the contents of the C string without its trailing NUL.
+    ///
+    /// [`into_bytes`](StringBytes::into_bytes) removes the terminator and
+    /// transfers the allocation to the vector. [`try_into_string`](StringBytes::try_into_string)
+    /// validates UTF-8 and keeps that allocation, including in an error.
+    /// The terminator is excluded from both successful results and error bytes.
+    ///
+    /// C strings need not contain valid UTF-8. Borrowing, copying, and lossy
+    /// string conversions validate their contents.
+    CString {
+        /// Returns the bytes without the trailing NUL, as in [`CString::as_bytes`].
+        #[inline]
+        fn as_bytes(&self) -> &[u8] {
+            CString::as_bytes(self)
+        }
 
-    /// Converts the contents into bytes, removing the trailing NUL and reusing
-    /// the allocation.
-    #[inline]
-    fn into_bytes(self) -> Vec<u8> {
-        CString::into_bytes(self)
-    }
+        /// Converts the contents into bytes, removing the trailing NUL and reusing
+        /// the allocation.
+        #[inline]
+        fn into_bytes(self) -> Vec<u8> {
+            CString::into_bytes(self)
+        }
 
-    impl_pointer_conversions_for_sized!();
-});
+        impl_pointer_conversions_for_sized!();
+    }
+);
 
 #[cfg(test)]
 mod tests {

@@ -3,23 +3,36 @@ use std::ffi::CStr;
 use crate::impls::impl_string_bytes;
 use crate::{sealed, StringBytes};
 
-// C strings need not be UTF-8, so the default string conversions validate
-// their contents.
-impl_string_bytes!(CStr {
-    /// Returns the bytes without the trailing NUL, as in [`CStr::to_bytes`].
-    #[inline]
-    fn as_bytes(&self) -> &[u8] {
-        CStr::to_bytes(self)
-    }
+impl_string_bytes!(
+    /// Exposes the contents of the C string without its trailing NUL.
+    ///
+    /// Unlike the inherent [`CStr::to_bytes`], which borrows a slice,
+    /// [`StringBytes::to_bytes`] returns a copied vector. Use
+    /// `StringBytes::to_bytes(value)` to select the trait method.
+    ///
+    /// Consuming a [`Box<CStr>`](Box) through [`into_bytes`](StringBytes::into_bytes)
+    /// reuses its allocation and removes the terminator. References,
+    /// [`Rc<CStr>`](std::rc::Rc), and [`Arc<CStr>`](std::sync::Arc) copy the contents.
+    ///
+    /// C strings need not contain valid UTF-8. Checked and lossy string
+    /// conversions validate their contents.
+    CStr {
+        /// Returns the bytes without the trailing NUL, as in [`CStr::to_bytes`].
+        #[inline]
+        fn as_bytes(&self) -> &[u8] {
+            CStr::to_bytes(self)
+        }
 
-    /// Converts the boxed C string into bytes, reusing its allocation.
-    #[inline]
-    fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
-        // Both conversions transfer the allocation. Removing the terminator
-        // changes the length, leaving its byte available as spare capacity.
-        self.into_c_string().into_bytes()
+        /// Converts the boxed C string into bytes, removing the trailing NUL and
+        /// reusing its allocation.
+        #[inline]
+        fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
+            // Both conversions transfer the allocation. Removing the terminator
+            // changes the length, leaving its byte available as spare capacity.
+            self.into_c_string().into_bytes()
+        }
     }
-});
+);
 
 #[cfg(test)]
 mod tests {

@@ -286,8 +286,7 @@ pub trait StringBytes: sealed::Sealed {
     /// Returns a string slice if the bytes are valid UTF-8.
     ///
     /// The slice borrows directly from `self`; no allocation or copying is
-    /// needed. Byte sequences are validated on each call. Types that already
-    /// guarantee UTF-8 skip validation and always return [`Ok`].
+    /// needed.
     ///
     /// # Errors
     ///
@@ -332,9 +331,6 @@ pub trait StringBytes: sealed::Sealed {
 
     /// Copies the bytes into a [`String`], leaving `self` unchanged.
     ///
-    /// Byte sequences are validated once per call. Types that already
-    /// guarantee UTF-8 are copied without validation and always return [`Ok`].
-    ///
     /// # Errors
     ///
     /// Returns [`FromUtf8Error`] containing the copied bytes if they are not
@@ -353,8 +349,7 @@ pub trait StringBytes: sealed::Sealed {
     /// ```
     #[inline]
     fn try_to_string(&self) -> Result<String, FromUtf8Error> {
-        // Copy through to_bytes, then always validate UTF-8. Types that already
-        // guarantee UTF-8 override this to avoid validating those bytes again.
+        // Validate the copied buffer so an error can return it to the caller.
         String::from_utf8(self.to_bytes())
     }
 
@@ -362,8 +357,7 @@ pub trait StringBytes: sealed::Sealed {
     ///
     /// Borrows valid UTF-8 without allocating. Otherwise, returns an owned
     /// string with the same replacements as [`String::from_utf8_lossy`].
-    /// The original bytes remain unchanged. Types that already guarantee UTF-8
-    /// skip validation.
+    /// The original bytes remain unchanged.
     ///
     /// # Examples
     ///
@@ -409,9 +403,6 @@ pub trait StringBytes: sealed::Sealed {
     /// Reuses the existing allocation where possible and copies the bytes
     /// otherwise, as with [`into_bytes`](Self::into_bytes).
     ///
-    /// Byte sequences are validated once. Types that already guarantee UTF-8
-    /// skip validation and always return [`Ok`].
-    ///
     /// # Errors
     ///
     /// Returns [`FromUtf8Error`] for invalid UTF-8. The error keeps the buffer
@@ -437,9 +428,7 @@ pub trait StringBytes: sealed::Sealed {
     where
         Self: Sized,
     {
-        // Use the allocation rules of into_bytes, then always validate UTF-8.
-        // Types that already guarantee UTF-8 override their string conversions
-        // to avoid validating those bytes again.
+        // Validate after conversion so an error retains the converted buffer.
         String::from_utf8(self.into_bytes())
     }
 
@@ -448,7 +437,7 @@ pub trait StringBytes: sealed::Sealed {
     /// Valid UTF-8 follows the allocation rules of
     /// [`into_bytes`](Self::into_bytes). Invalid sequences are replaced
     /// as in [`String::from_utf8_lossy`], without guaranteeing reuse of the
-    /// original allocation. Types that already guarantee UTF-8 skip validation.
+    /// original allocation.
     ///
     /// # Examples
     ///
@@ -465,7 +454,7 @@ pub trait StringBytes: sealed::Sealed {
         Self: Sized,
     {
         // Convert before taking ownership of the bytes so invalid input does
-        // not need an intermediate copy. Text types skip validation here.
+        // not need an intermediate copy.
         match self.to_string_lossy() {
             Cow::Owned(string) => string,
             Cow::Borrowed(_) => {
@@ -516,15 +505,13 @@ pub trait StringBytes: sealed::Sealed {
     #[doc(hidden)]
     #[inline]
     fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
-        // Unsized contents need a copying fallback unless they can transfer
-        // the boxed allocation directly.
+        // Copy in place unless the contents can transfer an allocation.
         (*self).to_bytes()
     }
 
     /// Converts the contents of an [`Rc`] into a [`Vec<u8>`].
     ///
-    /// With one strong owner, sized contents follow the allocation rules of
-    /// [`Self::into_bytes`]. Shared or unsized contents are copied.
+    /// Reuses the allocation where possible and copies the bytes otherwise.
     #[doc(hidden)]
     #[inline]
     fn rc_into_bytes(self: Rc<Self>) -> Vec<u8> {
@@ -533,17 +520,12 @@ pub trait StringBytes: sealed::Sealed {
 
     /// Converts the contents of an [`Arc`] into a [`Vec<u8>`].
     ///
-    /// With one strong owner, sized contents follow the allocation rules of
-    /// [`Self::into_bytes`]. Shared or unsized contents are copied.
+    /// Reuses the allocation where possible and copies the bytes otherwise.
     #[doc(hidden)]
     #[inline]
     fn arc_into_bytes(self: Arc<Self>) -> Vec<u8> {
         (*self).to_bytes()
     }
-
-    // The pointer defaults below follow the corresponding byte conversion's
-    // allocation rules and always validate UTF-8. Known UTF-8 types override
-    // these string conversions to avoid revalidation.
 
     /// Converts the contents of a [`Box`] into a [`String`].
     ///

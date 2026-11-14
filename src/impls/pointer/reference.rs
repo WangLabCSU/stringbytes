@@ -8,7 +8,14 @@ use crate::impls::impl_pointer_conversions_for_sized;
 use crate::impls::pointer::impl_string_bytes_for_pointer;
 use crate::{sealed, StringBytes};
 
-impl_string_bytes_for_pointer!(&T => to_bytes, try_to_string);
+impl_string_bytes_for_pointer!(
+    /// Borrows the value's bytes and delegates string conversions to `T`.
+    ///
+    /// Consuming the reference leaves the referenced value in place.
+    /// Owned byte and string results copy its contents. UTF-8 validation
+    /// follows `T`'s string conversions.
+    &T => to_bytes, try_to_string
+);
 
 #[cfg(test)]
 mod tests {

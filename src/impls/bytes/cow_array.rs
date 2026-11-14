@@ -8,21 +8,32 @@ use crate::{sealed, StringBytes};
 
 // Neither variant owns a transferable allocation; copy directly from the
 // array without first cloning it through Cow::into_owned.
-impl_string_bytes!([const N: usize]; Cow<'_, [u8; N]> {
-    #[inline]
-    fn as_bytes(&self) -> &[u8] {
-        self.as_ref()
-    }
-
-    impl_pointer_conversions_for_sized! {
+impl_string_bytes!(
+    /// Exposes the bytes of the borrowed or owned array.
+    ///
+    /// Both variants copy when an owned result is needed, including through
+    /// [`Box`], [`Rc`], and [`Arc`]. The owned
+    /// array is stored inline and has no separate buffer to transfer.
+    ///
+    /// Checked and lossy string conversions validate UTF-8.
+    [const N: usize]; Cow<'_, [u8; N]> {
+        /// Borrows the bytes of the borrowed or owned array.
         #[inline]
-        fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
-            // An owned array is part of the Cow enum, whose allocation cannot
-            // be transferred to Vec. Copy without first moving the Cow out.
-            (*self).to_bytes()
+        fn as_bytes(&self) -> &[u8] {
+            self.as_ref()
+        }
+
+        impl_pointer_conversions_for_sized! {
+            /// Copies the array's bytes out of the box.
+            #[inline]
+            fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
+                // An owned array is part of the Cow enum, whose allocation cannot
+                // be transferred to Vec. Copy without first moving the Cow out.
+                (*self).to_bytes()
+            }
         }
     }
-});
+);
 
 #[cfg(test)]
 mod tests {

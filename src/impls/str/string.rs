@@ -7,41 +7,53 @@ use std::sync::Arc;
 use crate::impls::{impl_pointer_conversions_for_sized, impl_string_bytes};
 use crate::{sealed, StringBytes};
 
-// String also guarantees UTF-8, so its string conversions skip the default
-// checks. Consuming it returns the same value, retaining its buffer and capacity.
-impl_string_bytes!(String {
-    #[inline]
-    fn as_bytes(&self) -> &[u8] {
-        String::as_bytes(self)
-    }
+impl_string_bytes!(
+    /// Uses the string's UTF-8 bytes without validating them again.
+    ///
+    /// Consuming conversions retain the buffer and capacity.
+    /// Borrowing conversions return a view of the string; copying conversions
+    /// leave the original unchanged. Checked string conversions always succeed,
+    /// and [`to_string_lossy`](StringBytes::to_string_lossy) returns a borrowed string.
+    String {
+        /// Borrows the UTF-8 bytes of the string.
+        #[inline]
+        fn as_bytes(&self) -> &[u8] {
+            String::as_bytes(self)
+        }
 
-    #[inline]
-    fn into_bytes(self) -> Vec<u8> {
-        String::into_bytes(self)
-    }
+        /// Converts the string into bytes, preserving its buffer and capacity.
+        #[inline]
+        fn into_bytes(self) -> Vec<u8> {
+            String::into_bytes(self)
+        }
 
-    #[inline]
-    fn try_borrow_str(&self) -> Result<&str, Utf8Error> {
-        Ok(self.as_str())
-    }
+        /// Borrows the string without checking UTF-8.
+        #[inline]
+        fn try_borrow_str(&self) -> Result<&str, Utf8Error> {
+            Ok(self.as_str())
+        }
 
-    #[inline]
-    fn try_to_string(&self) -> Result<String, FromUtf8Error> {
-        Ok(self.clone())
-    }
+        /// Clones the string without checking UTF-8.
+        #[inline]
+        fn try_to_string(&self) -> Result<String, FromUtf8Error> {
+            Ok(self.clone())
+        }
 
-    #[inline]
-    fn to_string_lossy(&self) -> Cow<'_, str> {
-        Cow::Borrowed(self.as_str())
-    }
+        /// Borrows the string without allocating or checking UTF-8.
+        #[inline]
+        fn to_string_lossy(&self) -> Cow<'_, str> {
+            Cow::Borrowed(self.as_str())
+        }
 
-    #[inline]
-    fn try_into_string(self) -> Result<String, FromUtf8Error> {
-        Ok(self)
-    }
+        /// Returns this string unchanged, preserving its buffer and capacity.
+        #[inline]
+        fn try_into_string(self) -> Result<String, FromUtf8Error> {
+            Ok(self)
+        }
 
-    impl_pointer_conversions_for_sized!();
-});
+        impl_pointer_conversions_for_sized!();
+    }
+);
 
 #[cfg(test)]
 mod tests {

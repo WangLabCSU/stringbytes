@@ -7,21 +7,32 @@ use crate::{sealed, StringBytes};
 
 // Arrays store bytes inline, but boxed arrays can give their allocation to
 // the resulting vector or string.
-impl_string_bytes!([const N: usize]; [u8; N] {
-    #[inline]
-    fn as_bytes(&self) -> &[u8] {
-        self
-    }
-
-    impl_pointer_conversions_for_sized! {
-        /// Converts the boxed array into a vector, reusing its allocation.
+impl_string_bytes!(
+    /// Exposes all bytes of the array.
+    ///
+    /// Converting the array itself into a [`Vec<u8>`] or [`String`] copies its
+    /// bytes. [`Box<[u8; N]>`](Box) reuses its allocation for
+    /// [`into_bytes`](StringBytes::into_bytes); [`Rc`] and
+    /// [`Arc`] copy the stored array's bytes.
+    ///
+    /// Checked and lossy string conversions validate UTF-8.
+    [const N: usize]; [u8; N] {
+        /// Returns the entire array as a byte slice.
         #[inline]
-        fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
-            // Passing self as an argument lets Box<[u8; N]> coerce to Box<[u8]>.
-            <[u8]>::into_vec(self)
+        fn as_bytes(&self) -> &[u8] {
+            self
+        }
+
+        impl_pointer_conversions_for_sized! {
+            /// Converts the boxed array into a vector, reusing its allocation.
+            #[inline]
+            fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
+                // Passing self as an argument lets Box<[u8; N]> coerce to Box<[u8]>.
+                <[u8]>::into_vec(self)
+            }
         }
     }
-});
+);
 
 #[cfg(test)]
 mod tests {
