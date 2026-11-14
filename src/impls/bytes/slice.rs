@@ -7,6 +7,7 @@ impl_string_bytes!([u8] {
         self
     }
 
+    /// Converts the boxed slice into a vector, reusing its allocation.
     #[inline]
     fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
         // Use the slice's inherent method to transfer the allocation.

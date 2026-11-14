@@ -29,11 +29,14 @@ impl_string_bytes!(str {
         Cow::Borrowed(self)
     }
 
+    /// Converts the boxed string into bytes, reusing its allocation.
     #[inline]
     fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
         <[u8]>::into_vec(self.into_boxed_bytes())
     }
 
+    /// Converts the boxed string into a [`String`] without reallocating or
+    /// checking UTF-8 again.
     #[inline]
     fn box_into_string(self: Box<Self>) -> Result<String, FromUtf8Error> {
         // String::from takes over the Box's allocation.

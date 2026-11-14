@@ -7,14 +7,16 @@ use crate::impls::{impl_pointer_conversions_for_sized, impl_string_bytes};
 use crate::{sealed, StringBytes};
 
 impl_string_bytes!(CString {
+    /// Returns the bytes without the trailing NUL, as in [`CString::as_bytes`].
     #[inline]
     fn as_bytes(&self) -> &[u8] {
         CString::as_bytes(self)
     }
 
+    /// Converts the contents into bytes, removing the trailing NUL and reusing
+    /// the allocation.
     #[inline]
     fn into_bytes(self) -> Vec<u8> {
-        // Remove the terminator while retaining the owned buffer.
         CString::into_bytes(self)
     }
 

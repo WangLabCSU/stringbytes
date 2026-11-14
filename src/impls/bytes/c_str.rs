@@ -3,14 +3,16 @@ use std::ffi::CStr;
 use crate::impls::impl_string_bytes;
 use crate::{sealed, StringBytes};
 
-// Exclude the trailing NUL, matching CStr::to_bytes. C strings need not be
-// UTF-8, so the default string conversions still validate their contents.
+// C strings need not be UTF-8, so the default string conversions validate
+// their contents.
 impl_string_bytes!(CStr {
+    /// Returns the bytes without the trailing NUL, as in [`CStr::to_bytes`].
     #[inline]
     fn as_bytes(&self) -> &[u8] {
         CStr::to_bytes(self)
     }
 
+    /// Converts the boxed C string into bytes, reusing its allocation.
     #[inline]
     fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
         // Both conversions transfer the allocation. Removing the terminator

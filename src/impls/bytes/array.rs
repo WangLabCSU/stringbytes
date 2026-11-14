@@ -14,6 +14,7 @@ impl_string_bytes!([const N: usize]; [u8; N] {
     }
 
     impl_pointer_conversions_for_sized! {
+        /// Converts the boxed array into a vector, reusing its allocation.
         #[inline]
         fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
             // Passing self as an argument lets Box<[u8; N]> coerce to Box<[u8]>.

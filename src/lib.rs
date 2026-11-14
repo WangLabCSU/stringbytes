@@ -183,8 +183,8 @@ mod sealed;
 ///
 /// The unchecked methods skip UTF-8 validation and require the caller to
 /// guarantee validity. [`to_string_lossy`](Self::to_string_lossy) and
-/// [`into_string_lossy`](Self::into_string_lossy) replace invalid sequences
-/// with `�` (U+FFFD), losing their original bytes.
+/// [`into_string_lossy`](Self::into_string_lossy) follow the behavior of
+/// [`String::from_utf8_lossy`].
 ///
 /// This trait is sealed and cannot be implemented outside this crate.
 ///
@@ -193,8 +193,8 @@ mod sealed;
 /// All implementations obey the following rules:
 ///
 /// - [`Self::as_bytes`] returns the same bytes unless the value is modified
-///   through mutable or owned access. Interior mutability must not change the
-///   bytes exposed through this method, [`AsRef<[u8]>`](AsRef),
+///   through mutable or owned access. Interior mutability does not change
+///   the bytes exposed through this method, [`AsRef<[u8]>`](AsRef),
 ///   [`AsMut<[u8]>`](AsMut), or [`Deref`](std::ops::Deref).
 /// - If [`AsRef<[u8]>`](AsRef) is implemented, it borrows the same slice as
 ///   [`as_bytes`](Self::as_bytes).
@@ -216,7 +216,7 @@ mod sealed;
 ///
 /// # Dyn compatibility
 ///
-/// This trait is [dyn compatible].
+/// This trait is not [dyn compatible].
 ///
 /// In older versions of Rust, dyn compatibility was called "object safety".
 ///
@@ -226,8 +226,6 @@ pub trait StringBytes: sealed::Sealed {
     ///
     /// This method does not allocate, copy, or validate UTF-8. The returned
     /// slice may contain any byte sequence.
-    /// For [`CStr`](std::ffi::CStr) and [`CString`](std::ffi::CString), it
-    /// excludes the trailing NUL byte.
     ///
     /// # Examples
     ///
@@ -243,10 +241,6 @@ pub trait StringBytes: sealed::Sealed {
     ///
     /// This method does not validate UTF-8. The returned vector owns a copy of
     /// the bytes, even when `self` owns its storage.
-    ///
-    /// For [`CStr`](std::ffi::CStr), use `StringBytes::to_bytes(value)` to
-    /// distinguish this method from [`CStr::to_bytes`](std::ffi::CStr::to_bytes),
-    /// which returns a borrowed slice.
     ///
     /// # Examples
     ///
@@ -512,16 +506,13 @@ pub trait StringBytes: sealed::Sealed {
     }
 
     // ------------------------------------------------------------------------
-    // Owned pointer receivers preserve the concrete type's conversion through
-    // dyn StringBytes.
+    // Owned pointer receivers let each storage type choose whether to move
+    // or copy its bytes.
     // ------------------------------------------------------------------------
 
     /// Converts the contents of a [`Box`] into a [`Vec<u8>`].
     ///
-    /// Boxed byte slices, byte arrays, [`str`](prim@str), and
-    /// [`CStr`](std::ffi::CStr) reuse their allocation.
-    /// Other boxed values follow the allocation rules of [`Self::into_bytes`].
-    /// This also supports [`Box<dyn StringBytes>`](Box).
+    /// Reuses the allocation where possible and copies the bytes otherwise.
     #[doc(hidden)]
     #[inline]
     fn box_into_bytes(self: Box<Self>) -> Vec<u8> {
@@ -532,9 +523,8 @@ pub trait StringBytes: sealed::Sealed {
 
     /// Converts the contents of an [`Rc`] into a [`Vec<u8>`].
     ///
-    /// With one strong owner, sized contents use [`Self::into_bytes`].
-    /// Shared contents, slices, and [`str`](prim@str) are copied.
-    /// Trait objects use their concrete type's conversion.
+    /// With one strong owner, sized contents follow the allocation rules of
+    /// [`Self::into_bytes`]. Shared or unsized contents are copied.
     #[doc(hidden)]
     #[inline]
     fn rc_into_bytes(self: Rc<Self>) -> Vec<u8> {
@@ -543,9 +533,8 @@ pub trait StringBytes: sealed::Sealed {
 
     /// Converts the contents of an [`Arc`] into a [`Vec<u8>`].
     ///
-    /// With one strong owner, sized contents use [`Self::into_bytes`].
-    /// Shared contents, slices, and [`str`](prim@str) are copied.
-    /// Trait objects use their concrete type's conversion.
+    /// With one strong owner, sized contents follow the allocation rules of
+    /// [`Self::into_bytes`]. Shared or unsized contents are copied.
     #[doc(hidden)]
     #[inline]
     fn arc_into_bytes(self: Arc<Self>) -> Vec<u8> {
@@ -558,10 +547,7 @@ pub trait StringBytes: sealed::Sealed {
 
     /// Converts the contents of a [`Box`] into a [`String`].
     ///
-    /// Boxed byte slices, byte arrays, [`str`](prim@str), and
-    /// [`CStr`](std::ffi::CStr) reuse their allocation.
-    /// Other boxed values follow the allocation rules of [`Self::try_into_string`].
-    /// This also supports [`Box<dyn StringBytes>`](Box).
+    /// Allocation reuse follows [`Self::box_into_bytes`].
     ///
     /// # Errors
     ///
@@ -574,9 +560,7 @@ pub trait StringBytes: sealed::Sealed {
 
     /// Converts the contents of an [`Rc`] into a [`String`].
     ///
-    /// With one strong owner, sized contents are moved out and converted with
-    /// [`Self::try_into_string`]. Shared contents, slices, and [`str`](prim@str) are copied.
-    /// Trait objects use their concrete type's conversion.
+    /// Allocation reuse follows [`Self::rc_into_bytes`].
     ///
     /// # Errors
     ///
@@ -589,9 +573,7 @@ pub trait StringBytes: sealed::Sealed {
 
     /// Converts the contents of an [`Arc`] into a [`String`].
     ///
-    /// With one strong owner, sized contents are moved out and converted with
-    /// [`Self::try_into_string`]. Shared contents, slices, and [`str`](prim@str) are copied.
-    /// Trait objects use their concrete type's conversion.
+    /// Allocation reuse follows [`Self::arc_into_bytes`].
     ///
     /// # Errors
     ///
